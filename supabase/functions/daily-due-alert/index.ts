@@ -171,7 +171,8 @@ Deno.serve(async () => {
       .sort((a, b) => a.days - b.days)
 
     if (!items.length) {
-      await supabase.from('alert_settings').update({ last_sent_on: today }).eq('user_id', setting.user_id)
+      // Nada vencendo na janela. Não marca o dia: se um boleto for
+      // cadastrado mais tarde, o próximo disparo ainda consegue avisar.
       report.push({ user: setting.email, status: 'nenhum vencimento na janela' })
       continue
     }
@@ -181,6 +182,7 @@ Deno.serve(async () => {
       headers: {
         'Authorization': `Bearer ${RESEND_API_KEY}`,
         'Content-Type': 'application/json',
+        'User-Agent': 'real-total/1.0',
       },
       body: JSON.stringify({
         from: FROM,
@@ -193,7 +195,13 @@ Deno.serve(async () => {
     })
 
     const body = await send.json().catch(() => ({}))
-    await supabase.from('alert_settings').update({ last_sent_on: today }).eq('user_id', setting.user_id)
+
+    // Só marca o dia quando o e-mail realmente saiu. Marcar numa falha
+    // trava o alerta do dia inteiro, sem chance de nova tentativa.
+    if (send.ok) {
+      await supabase.from('alert_settings').update({ last_sent_on: today }).eq('user_id', setting.user_id)
+    }
+
     report.push({
       user: setting.email,
       status: send.ok ? `enviado (${items.length} itens)` : `falhou: ${send.status} ${JSON.stringify(body)}`,
