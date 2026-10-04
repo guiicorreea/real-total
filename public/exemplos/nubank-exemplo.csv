@@ -1,0 +1,6 @@
+data;descricao;valor;tipo;categoria
+18/03/2025;Café Central;-12,50;debito;Alimentação
+18/03/2025;Padaria do Bairro;-28,90;debito;Alimentação
+17/03/2025;Mercado São Lucas;-186,42;debito;Mercado
+16/03/2025;Pix recebido — João Silva;350,00;credito;Outros
+15/03/2025;Streaming Flix;-39,90;debito;Assinaturas
