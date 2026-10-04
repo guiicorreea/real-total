@@ -5,6 +5,7 @@ dist
 .env
 .env.*
 !.env.example
+!.env.production
 
 # cache local do Supabase CLI
 supabase/.temp
