@@ -897,3 +897,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, [role='button']
 .select-cell { width: 38px; text-align: center; }
 .select-cell input { width: 15px; height: 15px; accent-color: #4b45a8; cursor: pointer; }
 .transaction-table tbody tr.is-selected { background: #f5f4fe; }
+.split-mode { display: flex; gap: 6px; }
+.split-mode__btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border: 1px solid #dfdcfb; border-radius: 9px; background: #fff; color: #55526a; font-size: 0.8rem; font-weight: 600; cursor: pointer; }
+.split-mode__btn--on { background: #f0eefc; border-color: #c9c4f2; color: #4b45a8; }
+
+.split-hint { font-size: 0.78rem; color: #6b6880; line-height: 1.45; }

@@ -1418,8 +1418,20 @@ function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, o
         if (budget.accountId && transaction.accountId !== budget.accountId) continue
         const allocations = getTransactionAllocations(transaction)
 
+        // Nível 0: o usuário dividiu a transação entre itens do orçamento.
+        // Quando ele diz que o Pix pagou aluguel, água e luz, isso vale mais
+        // que qualquer palpite por categoria.
+        if (allocations.some((allocation) => allocation.budgetItemId === budget.id)) {
+          total += allocations
+            .filter((allocation) => allocation.budgetItemId === budget.id)
+            .reduce((sum, allocation) => sum + allocation.amount, 0)
+          continue
+        }
+
         if (budget.billId && transaction.linkedBillId === budget.billId) {
-          total += allocations.reduce((sum, allocation) => sum + allocation.amount, 0)
+          total += allocations
+            .filter((allocation) => !allocation.budgetItemId)
+            .reduce((sum, allocation) => sum + allocation.amount, 0)
           continue
         }
 
@@ -1434,44 +1446,37 @@ function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, o
     }
 
     // Boleto de banco não repete o nome do boleto no histórico, então o
-    // casamento por palavra quase nunca pega. Sem o nível 3 o previsto
-    // nunca encontra o realizado. A sobra entra uma vez só por categoria,
-    // descontando o que a conciliação já absorveu.
-    const claimed = {}
-    for (const budget of budgets) {
-      if (spent[budget.id] > 0) {
-        const key = budgetSpendKey(budget)
-        claimed[key] = (claimed[key] ?? 0) + spent[budget.id]
-      }
-    }
-
-    const leftovers = {}
-    for (const budget of budgets) {
-      const key = budgetSpendKey(budget)
-      if (leftovers[key] !== undefined) continue
-      const total = budget.accountId
-        ? (spendingByAccountCategory[`${budget.accountId}::${budget.category}`] ?? 0)
-        : (spendingByCategory[budget.category] ?? 0)
-      leftovers[key] = Math.max(0, total - (claimed[key] ?? 0))
-    }
-
-    for (const budget of budgets) {
-      if (spent[budget.id] > 0) continue
-      const key = budgetSpendKey(budget)
-      if ((leftovers[key] ?? 0) <= 0.01) continue
-      spent[budget.id] = leftovers[key]
-      leftovers[key] = 0
-    }
-
+    // casamento por palavra quase nunca pega. É por isso que existe o
+    // desdobramento por item do orçamento: ele é a forma honesta de dizer
+    // que um Pix pagou aluguel, água e luz de uma vez.
+    //
+    // Não existe redistribution de sobra aqui de propósito. Um corte de
+    // cabelo na categoria Serviços não pertence ao IPTV, e nenhum palpite
+    // automático resolve isso. O realizado do grupo vem do gasto real da
+    // categoria, não da soma dos itens.
     return spent
-  }, [budgets, monthTransactions, spendingByCategory, spendingByAccountCategory])
+  }, [budgets, monthTransactions])
 
   const getSpent = (budget) => spentByBudgetId[budget.id] ?? 0
   const groupData = groups.map((group) => {
     const items = budgets.filter((budget) => budget.groupId === group.id)
     const planned = items.reduce((sum, budget) => sum + plannedBudgetAmount(budget, monthKey), 0)
-    const realized = items.reduce((sum, budget) => sum + getSpent(budget), 0)
-    return { ...group, items, planned, realized, difference: planned - realized }
+
+    // O realizado do grupo é o gasto real das categorias dele, uma vez por
+    // categoria. Somar os itens obrigaria a despejar gasto sem dono em algum
+    // item, e é isso que fazia o corte de cabelo aparecer no IPTV.
+    const keys = [...new Set(items.map((budget) => budgetSpendKey(budget)))]
+    const realized = keys.reduce((sum, key) => {
+      const first = items.find((budget) => budgetSpendKey(budget) === key)
+      const total = first.accountId
+        ? (spendingByAccountCategory[`${first.accountId}::${first.category}`] ?? 0)
+        : (spendingByCategory[first.category] ?? 0)
+      return sum + total
+    }, 0)
+
+    const attributed = items.reduce((sum, budget) => sum + getSpent(budget), 0)
+
+    return { ...group, items, planned, realized, attributed, difference: planned - realized }
   })
   const totalPlanned = groupData.reduce((sum, group) => sum + group.planned, 0)
   const totalRealized = groupData.reduce((sum, group) => sum + group.realized, 0)
@@ -1627,6 +1632,7 @@ function BudgetModal({ open, onClose, onSave, budget, groups, accounts, monthKey
 }
 
 function SplitTransactionModal({ open, item, onClose, onSave, budgets = [] }) {
+  const [mode, setMode] = useState('item')
   const [allocations, setAllocations] = useState([])
   const total = Number(item?.amount || 0)
   const allocated = allocations.reduce((sum, allocation) => sum + Number(allocation.amount || 0), 0)
@@ -1646,13 +1652,37 @@ function SplitTransactionModal({ open, item, onClose, onSave, budgets = [] }) {
 
   const budgeted = useMemo(() => Object.entries(plannedByCategory).sort((a, b) => b[1] - a[1]), [plannedByCategory])
 
+  // Itens do orçamento do mês. Um Pix que paga aluguel, água e luz de uma vez
+  // se divide aqui, e cada item passa a mostrar o que dele foi pago.
+  const plannedItems = useMemo(() => budgets
+    .map((budget) => ({ id: budget.id, label: budget.label, category: budget.category, amount: plannedBudgetAmount(budget, itemMonthKey) }))
+    .filter((budget) => budget.amount > 0)
+    .sort((a, b) => b.amount - a.amount), [budgets, itemMonthKey])
+
+  const byId = useMemo(() => Object.fromEntries(plannedItems.map((budget) => [budget.id, budget])), [plannedItems])
+
+  const fillFromBudget = () => setAllocations((current) => current.map((allocation) => {
+    if (mode === 'item' && allocation.budgetItemId && byId[allocation.budgetItemId]) return { ...allocation, amount: byId[allocation.budgetItemId].amount }
+    if (mode === 'category') return { ...allocation, amount: plannedByCategory[allocation.category] ?? allocation.amount }
+    return allocation
+  }))
+
+  const applyPlannedItems = () => setAllocations(plannedItems.slice(0, 8).map((budget) => ({
+    id: `allocation-${Date.now()}-${budget.id}`,
+    budgetItemId: budget.id,
+    category: budget.category,
+    amount: budget.amount,
+  })))
+
   useEffect(() => {
     if (!open || !item) return
 
     const saved = Array.isArray(item.allocations) && item.allocations.length ? item.allocations : null
     if (saved) {
+      setMode(saved.some((allocation) => allocation.budgetItemId) ? 'item' : 'category')
       setAllocations(saved.map((allocation, index) => ({
         id: allocation.id ?? `allocation-${Date.now()}-${index}`,
+        budgetItemId: allocation.budgetItemId ?? null,
         category: allocation.category,
         amount: Number(allocation.amount || 0),
       })))
@@ -1661,19 +1691,17 @@ function SplitTransactionModal({ open, item, onClose, onSave, budgets = [] }) {
 
     const suggested = budgeted.filter(([, amount]) => amount > 0)
     const seed = suggested.length
-      ? suggested.map(([category, amount], index) => ({ id: `allocation-${Date.now()}-${index}`, category, amount }))
-      : [{ id: `allocation-${Date.now()}-0`, category: item.category ?? budgetCategoryOptions[0], amount: total }]
+      ? suggested.map(([category, amount], index) => ({ id: `allocation-${Date.now()}-${index}`, budgetItemId: null, category, amount }))
+      : [{ id: `allocation-${Date.now()}-0`, budgetItemId: null, category: item.category ?? budgetCategoryOptions[0], amount: total }]
     setAllocations(seed)
   }, [item, open, budgeted])
-
-  const fillFromBudget = () => setAllocations((current) => current.map((allocation) => ({ ...allocation, amount: plannedByCategory[allocation.category] ?? allocation.amount })))
 
   if (!open || !item) return null
   const updateAllocation = (id, key, value) => setAllocations((current) => current.map((allocation) => allocation.id === id ? { ...allocation, [key]: value } : allocation))
   const addAllocation = () => {
     const used = new Set(allocations.map((allocation) => allocation.category))
     const next = budgeted.find(([category]) => !used.has(category))?.[0] ?? budgetCategoryOptions.find((category) => !used.has(category)) ?? budgetCategoryOptions[0]
-    setAllocations((current) => [...current, { id: `allocation-${Date.now()}`, category: next, amount: Math.max(remaining, 0) }])
+    setAllocations((current) => [...current, { id: `allocation-${Date.now()}`, budgetItemId: null, category: next, amount: Math.max(remaining, 0) }])
   }
   const removeAllocation = (id) => setAllocations((current) => current.filter((allocation) => allocation.id !== id))
   const submit = (event) => {
@@ -1683,7 +1711,7 @@ function SplitTransactionModal({ open, item, onClose, onSave, budgets = [] }) {
   }
   const isBalanced = Math.abs(remaining) <= 0.01
 
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><form className="modal split-modal" onSubmit={submit}><div className="modal__header"><div><span className="eyebrow">Gasto composto</span><h2>Desdobrar transação</h2></div><button type="button" className="icon-button" onClick={onClose}><X size={18} /></button></div><p className="modal__description">Distribua o valor total entre as categorias. A transação original continuará aparecem uma única vez no extrato.</p><div className="split-total"><span>Valor total</span><strong>{formatCurrency(total)}</strong></div>{budgeted.length > 0 && <button type="button" className="split-budget-button" onClick={fillFromBudget}><Target size={15} /> Preencher com o que está orçado</button>}<div className="split-allocation-list">{allocations.map((allocation, index) => <div className="split-allocation-row" key={allocation.id}><span className="split-allocation-row__number">{index + 1}</span><span className="select-wrap"><select value={allocation.category} onChange={(event) => updateAllocation(allocation.id, 'category', event.target.value)}>{budgetCategoryOptions.map((category) => <option key={category}>{category}</option>)}</select><ChevronDown size={14} /></span><span className="input-prefix"><span>R$</span><input type="number" min="0" step="0.01" value={allocation.amount} onChange={(event) => updateAllocation(allocation.id, 'amount', event.target.value)} /></span>{plannedByCategory[allocation.category] !== undefined && <span className="split-planned-hint">orçado {formatCurrency(plannedByCategory[allocation.category])}</span>}{allocations.length > 1 && <button type="button" className="icon-button icon-button--subtle" onClick={() => removeAllocation(allocation.id)} aria-label="Remover distribuição"><Trash2 size={15} /></button>}</div>)}</div><button type="button" className="split-add-button" onClick={addAllocation}><Plus size={15} /> Adicionar categoria</button><div className={classNames('split-remaining', isBalanced ? 'split-remaining--ok' : 'split-remaining--warning')}><span>{isBalanced ? 'Valor distribuído corretamente' : remaining > 0 ? 'Falta distribuir' : 'Distribuição acima do total'}</span><strong>{formatCurrency(Math.abs(remaining))}</strong></div><div className="modal__actions"><button type="button" className="button button--ghost" onClick={onClose}>Cancelar</button><button type="submit" className="button button--primary" disabled={!isBalanced || allocations.length < 2}><Check size={16} /> Salvar desdobramento</button></div></form></div>
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><form className="modal split-modal" onSubmit={submit}><div className="modal__header"><div><span className="eyebrow">Gasto composto</span><h2>Desdobrar transação</h2></div><button type="button" className="icon-button" onClick={onClose}><X size={18} /></button></div><p className="modal__description">Distribua o valor total entre as categorias. A transação original continuará aparecem uma única vez no extrato.</p><div className="split-total"><span>Valor total</span><strong>{formatCurrency(total)}</strong></div>{plannedItems.length > 0 && <div className="split-mode"><button type="button" className={classNames('split-mode__btn', mode === 'item' && 'split-mode__btn--on')} onClick={() => setMode('item')}><Target size={14} /> Por item do orçamento</button><button type="button" className={classNames('split-mode__btn', mode === 'category' && 'split-mode__btn--on')} onClick={() => setMode('category')}>Por categoria</button></div>}{mode === 'item' && plannedItems.length > 0 && <div className="split-hint">Um pagamento pode cobrir vários boletos. Marque quais ele quita e o valor de cada um, e o realizado cai no item certo.</div>}{mode === 'item' && <button type="button" className="split-budget-button" onClick={applyPlannedItems}><Target size={15} /> Trazer os itens de {formatMonthLabel(itemMonthKey)}</button>}{mode === 'category' && <button type="button" className="split-budget-button" onClick={fillFromBudget}><Target size={15} /> Preencher com o que está orçado</button>}<div className="split-allocation-list">{allocations.map((allocation, index) => <div className="split-allocation-row" key={allocation.id}><span className="split-allocation-row__number">{index + 1}</span>{mode === 'item' ? <span className="select-wrap"><select value={allocation.budgetItemId ?? ''} onChange={(event) => { const picked = byId[event.target.value]; updateAllocation(allocation.id, 'budgetItemId', event.target.value); if (picked) updateAllocation(allocation.id, 'category', picked.category) }}><option value="">Escolher item...</option>{plannedItems.map((budget) => <option key={budget.id} value={budget.id}>{budget.label} · {budget.category} · {formatCurrency(budget.amount)}</option>)}</select><ChevronDown size={14} /></span> : <span className="select-wrap"><select value={allocation.category} onChange={(event) => updateAllocation(allocation.id, 'category', event.target.value)}>{budgetCategoryOptions.map((category) => <option key={category}>{category}</option>)}</select><ChevronDown size={14} /></span>}<span className="input-prefix"><span>R$</span><input type="number" min="0" step="0.01" value={allocation.amount} onChange={(event) => updateAllocation(allocation.id, 'amount', event.target.value)} /></span>{(mode === 'category' ? plannedByCategory[allocation.category] : byId[allocation.budgetItemId]?.amount) !== undefined && <span className="split-planned-hint">orçado {formatCurrency(mode === 'category' ? plannedByCategory[allocation.category] : byId[allocation.budgetItemId]?.amount)}</span>}{allocations.length > 1 && <button type="button" className="icon-button icon-button--subtle" onClick={() => removeAllocation(allocation.id)} aria-label="Remover distribuição"><Trash2 size={15} /></button>}</div>)}</div><button type="button" className="split-add-button" onClick={addAllocation}><Plus size={15} /> Adicionar categoria</button><div className={classNames('split-remaining', isBalanced ? 'split-remaining--ok' : 'split-remaining--warning')}><span>{isBalanced ? 'Valor distribuído corretamente' : remaining > 0 ? 'Falta distribuir' : 'Distribuição acima do total'}</span><strong>{formatCurrency(Math.abs(remaining))}</strong></div><div className="modal__actions"><button type="button" className="button button--ghost" onClick={onClose}>Cancelar</button><button type="submit" className="button button--primary" disabled={!isBalanced || allocations.length < 2}><Check size={16} /> Salvar desdobramento</button></div></form></div>
 }
 
 function BillsPage({ bills, candidates, transactions, accounts, outlookAccount, outlookStatus, outlookMessage, configured, candidatePasswords, candidateBusy, duplicateCount, onRemoveDuplicates, onConnect, onDisconnect, onSync, onAdd, onEdit, onDelete, onMatch, onLaunch, onReopen, onSaveAll, onDiscardAll, onProcessCandidate, onCandidatePasswordChange, onReviewCandidate, onReviewManualBill, onDiscardCandidate, onImportStatement }) {
