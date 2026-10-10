@@ -640,6 +640,110 @@ function extractDailyRows(pages) {
   return rows
 }
 
+// Nubank também não usa tabela. O dia vem num cabeçalho curto, o tipo vem na
+// coluna do meio e o valor na direita, sem sinal:
+//
+//   01 OUT 2026
+//   Total de entradas              + 17,00
+//   Transferência recebida pelo Pix  Tobias Balduino   17,00
+//
+// O sinal da transação não vem da linha, vem do subtotal que a precede. Como
+// a página pode quebrar entre o subtotal e a transação, a descrição é usada
+// como segunda fonte: "recebida" é entrada, "enviada" e "débito" são saída.
+
+const NUBANK_DAY_PATTERN = /^(\d{1,2})\s+([A-Z]{3})\s+(\d{4})$/
+const NUBANK_MONEY_PATTERN = /^[+\-−–—]?\s*\d{1,3}(\.\d{3})*,\d{2}$/
+
+const nubankMonthNumber = {
+  JAN: 1, FEV: 2, MAR: 3, ABR: 4, MAI: 5, JUN: 6,
+  JUL: 7, AGO: 8, SET: 9, OUT: 10, NOV: 11, DEZ: 12,
+}
+
+function nubankDayToIso(text) {
+  const match = text.trim().match(NUBANK_DAY_PATTERN)
+  if (!match) return ''
+  const month = nubankMonthNumber[match[2].toUpperCase()]
+  if (!month) return ''
+  return `${match[3]}-${String(month).padStart(2, '0')}-${match[1].padStart(2, '0')}`
+}
+
+function nubankSign(text, fallback) {
+  const normalized = normalizeText(text)
+  if (/recebid|entrada|deposito|credito|rendimento/.test(normalized)) return 1
+  if (/enviad|debito|saida|pagamento|compra|estorno/.test(normalized)) return -1
+  return fallback
+}
+
+const NUBANK_SUMMARY = /saldo|rendimento|total de|extrato|valores em|cpf|agencia|conta|extrato gerado|atendimento|nubank|nu pagamentos|nu financeira|cnpj|nao nos responsabilizamos|satisf/i
+
+function extractNubankRows(pages) {
+  const rows = []
+  let currentDate = ''
+  let fallbackSign = -1
+
+  for (const cells of pages) {
+    const lines = groupCellsIntoLines(cells)
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]
+      const text = line.cells.map((cell) => cell.str.trim()).join(' ').replace(/\s+/g, ' ').trim()
+      if (!text) continue
+
+      const day = line.cells.find((cell) => cell.x < 110 && NUBANK_DAY_PATTERN.test(cell.str.trim()))
+      if (day) {
+        currentDate = nubankDayToIso(day.str)
+        continue
+      }
+
+      if (!currentDate) continue
+      if (/total de entradas/i.test(text)) {
+        fallbackSign = 1
+        continue
+      }
+      if (/total de sa/i.test(text)) {
+        fallbackSign = -1
+        continue
+      }
+      if (NUBANK_SUMMARY.test(text)) continue
+
+      const moneyCell = [...line.cells].reverse().find((cell) => NUBANK_MONEY_PATTERN.test(cell.str.trim()))
+      if (!moneyCell) continue
+
+      // Descrição: o tipo da coluna do meio e o restante, incluindo as linhas
+      // de continuação que o banco quebra quando o nome é comprido.
+      const parts = line.cells
+        .filter((cell) => cell.x >= 110 && cell.x < 490)
+        .map((cell) => cell.str.trim())
+      const descriptionParts = parts.length ? parts : [line.cells[0].str.trim()]
+
+      for (let look = index + 1; look < lines.length; look += 1) {
+        const next = lines[look]
+        const nextText = next.cells.map((cell) => cell.str.trim()).join(' ').replace(/\s+/g, ' ').trim()
+        if (!nextText) continue
+        if (next.cells.some((cell) => cell.x < 110 && NUBANK_DAY_PATTERN.test(cell.str.trim()))) break
+        if (/total de/i.test(nextText)) break
+        if (next.cells.some((cell) => NUBANK_MONEY_PATTERN.test(cell.str.trim()))) break
+        if (NUBANK_SUMMARY.test(nextText)) break
+        descriptionParts.push(...next.cells.filter((cell) => cell.x >= 255).map((cell) => cell.str.trim()))
+        index = look
+      }
+
+      const description = descriptionParts.join(' ').replace(/\s+/g, ' ').trim()
+      const sign = nubankSign(description, fallbackSign)
+      const value = Math.abs(parseAmount(moneyCell.str))
+      if (!value) continue
+
+      rows.push({
+        date: currentDate,
+        description,
+        amount: `${sign < 0 ? '-' : '+'}R$ ${value.toFixed(2).replace('.', ',')}`,
+      })
+    }
+  }
+
+  return rows
+}
+
 async function parsePdf(file, password = '') {
   try {
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
@@ -668,6 +772,8 @@ async function parsePdf(file, password = '') {
     let rows = extracted.rows
     // Extrato do PicPay tem outro formato, sem tabela.
     if (!rows.length) rows = extractDailyRows(pageCells)
+    // Extrato do Nubank tem um terceiro formato: dia, subtotal e tipo.
+    if (!rows.length) rows = extractNubankRows(pageCells)
     if (!rows.length) rows = parsePdfText(pages.join('\n'))
 
     if (!rows.length) {
