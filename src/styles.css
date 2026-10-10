@@ -884,3 +884,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [role='button']
   .outlook-import-item { flex-wrap: wrap; }
   .outlook-import-item__text { flex: 1 1 100%; order: -1; }
 }
+.split-budget-button { display: inline-flex; align-items: center; gap: 7px; padding: 8px 13px; border: 1px solid #dfdcfb; border-radius: 10px; background: #faf9ff; color: #4b45a8; font-size: 0.82rem; font-weight: 600; cursor: pointer; }
+.split-budget-button:hover { background: #f2f0fe; }
+
+.split-planned-hint { font-size: 0.72rem; color: #6b6880; white-space: nowrap; }
