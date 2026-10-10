@@ -918,3 +918,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, [role='button']
 .review-table tr.row-ignored .review-description strong { text-decoration: line-through; }
 .duplicate-label--off { color: #6b6880; }
 .split-remaining--error { color: #a1201a; background: #fdeeed; }
+.crash-panel { padding: 22px; }
+.crash-panel h2 { margin: 0 0 6px; font-size: 1.05rem; }
+.crash-panel p { margin: 0 0 12px; font-size: 0.85rem; color: var(--muted); }
+.crash-panel__detail { margin: 0 0 16px; padding: 11px 13px; border: 1px solid #f0d5d3; border-radius: 10px; background: #fdeeed; color: #8a1f19; font-size: 0.78rem; white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow: auto; }
+.crash-panel__actions { display: flex; gap: 10px; flex-wrap: wrap; }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   AlertTriangle,
@@ -2131,7 +2131,7 @@ function BootScreen() {
   )
 }
 
-function App() {
+function AppRoot() {
   const [status, setStatus] = useState('loading')
   const [user, setUser] = useState(null)
 
@@ -3172,4 +3172,41 @@ function FinanceApp({ user }) {
   )
 }
 
-export default App
+// Sem isto, qualquer erro de runtime deixa a página inteira branca e não
+// diz nada. Aqui o erro vira uma tela legível, com o botão de recarregar.
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props)
+    this.state = { error: null }
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error }
+  }
+
+  componentDidCatch(error, info) {
+    console.error('Falha ao renderizar o Real Total:', error, info?.componentStack)
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children
+
+    return (
+      <div className="page-stack">
+        <section className="panel crash-panel">
+          <h2>Algo quebrou ao abrir esta tela</h2>
+          <p>Seus dados continuam salvos na nuvem. Recarregue a página para continuar.</p>
+          <pre className="crash-panel__detail">{String(this.state.error?.message ?? this.state.error)}</pre>
+          <div className="crash-panel__actions">
+            <button className="button button--primary" onClick={() => window.location.reload()}><RefreshCw size={16} /> Recarregar</button>
+            <button className="button button--ghost" onClick={() => this.setState({ error: null })}>Tentar de novo sem recarregar</button>
+          </div>
+        </section>
+      </div>
+    )
+  }
+}
+
+export default function App() {
+  return <ErrorBoundary><AppRoot /></ErrorBoundary>
+}
