@@ -444,7 +444,7 @@ function firstMoneyIn(cells, key) {
 
 function rowsFromLine(line, columns) {
   const text = line.cells.map((cell) => cell.str).join(' ').replace(/\s+/g, ' ').trim()
-  if (!text || /^total\b/i.test(text)) return { skipped: true }
+  if (!text || /^total\b/i.test(text)) return { skipped: true, balance: null, amountValue: 0 }
 
   const classified = line.cells.map((cell) => {
     const value = cell.str.trim()
@@ -472,19 +472,49 @@ function rowsFromLine(line, columns) {
 
   const credit = firstMoneyIn(classified, 'credit')
   const debit = firstMoneyIn(classified, 'debit')
+  const balanceCell = classified.find((cell) => cell.key === 'balance')
 
   // Bradesco imprime crédito e débito em colunas separadas, sempre com sinal
   // positivo. O app usa sinal negativo para despesa, então o débito vira
   // negativo e o crédito continua positivo.
   const amount = debit ? `-${debit.replace(/^-/, '')}` : credit
-  if (!amount) return { skipped: true }
-  if (Math.abs(parseAmount(amount)) < 0.005) return { skipped: true }
+  const amountValue = amount ? parseAmount(amount) : 0
+  const balance = balanceCell ? parseAmount(balanceCell.str) : null
 
-  return { date, description, amount, skipped: false }
+  if (!amount || Math.abs(amountValue) < 0.005) return { skipped: true, balance, amountValue }
+
+  return { skipped: false, date, description, amount, amountValue, balance }
+}
+
+// A conferência de saldo usa o que o próprio extrato afirma: o saldo da
+// primeira linha menos o movimento dela dá o saldo inicial, e o saldo da
+// última linha é o final. Se a soma das movimentações não levar de um ao
+// outro, alguma linha entrou errada ou ficou de fora.
+function buildReconciliation(rows, openingLine, closingLine) {
+  if (!openingLine || !closingLine) return null
+
+  const openingBalance = openingLine.balance - openingLine.amountValue
+  const closingBalance = closingLine.balance
+  const movement = rows.reduce((total, row) => total + parseAmount(row.amount), 0)
+  const expected = openingBalance + movement
+  const difference = Math.round((expected - closingBalance) * 100) / 100
+
+  return {
+    openingBalance: Math.round(openingBalance * 100) / 100,
+    closingBalance: Math.round(closingBalance * 100) / 100,
+    movement: Math.round(movement * 100) / 100,
+    expected: Math.round(expected * 100) / 100,
+    difference,
+    matches: Math.abs(difference) < 0.01,
+    periodStart: rows[0]?.date ?? null,
+    periodEnd: rows[rows.length - 1]?.date ?? null,
+  }
 }
 
 function extractTableRows(pages) {
   const rows = []
+  let openingLine = null
+  let closingLine = null
 
   for (const cells of pages) {
     const lines = groupCellsIntoLines(cells)
@@ -496,17 +526,20 @@ function extractTableRows(pages) {
 
     for (const line of lines.slice(headerIndex + 1)) {
       const parsed = rowsFromLine(line, columns)
-      if (parsed.skipped) continue
-
-      // O banco repete a data só quando ela muda; linha sem data herda a anterior.
       if (parsed.date) currentDate = parsed.date
       if (!currentDate) continue
 
+      if (parsed.balance !== null) {
+        if (!openingLine) openingLine = { balance: parsed.balance, amountValue: parsed.amountValue }
+        closingLine = { balance: parsed.balance }
+      }
+
+      if (parsed.skipped) continue
       rows.push({ date: currentDate, description: parsed.description, amount: parsed.amount })
     }
   }
 
-  return rows
+  return { rows, reconciliation: buildReconciliation(rows, openingLine, closingLine) }
 }
 
 async function parsePdf(file, password = '') {
@@ -533,7 +566,8 @@ async function parsePdf(file, password = '') {
       pages.push(cells.map((cell) => cell.str).join(' '))
     }
 
-    let rows = extractTableRows(pageCells)
+    let extracted = extractTableRows(pageCells)
+    let rows = extracted.rows
     if (!rows.length) rows = parsePdfText(pages.join('\n'))
 
     if (!rows.length) {
@@ -553,6 +587,7 @@ async function parsePdf(file, password = '') {
     return {
       rows,
       requiresPassword: false,
+      reconciliation: extracted.reconciliation,
       warnings: rows.length ? [] : ['O PDF foi carregado, mas não encontramos linhas tabulares. Tente CSV/XLSX para uma leitura mais precisa.'],
     }
   } catch (error) {
@@ -560,6 +595,7 @@ async function parsePdf(file, password = '') {
     return {
       rows: [],
       requiresPassword,
+      reconciliation: null,
       warnings: [requiresPassword ? 'Este PDF está protegido. Informe a senha do boleto para analisar o documento.' : 'Não foi possível extrair texto deste PDF automaticamente. O arquivo foi recebido, mas a leitura precisa de CSV/XLSX ou de uma revisão manual.'],
     }
   }
@@ -585,6 +621,7 @@ export async function parseStatement(file, institution, accountId, options = {})
     rows: normalizeRows(result.rows, institution, accountId),
     warnings: result.warnings,
     requiresPassword: Boolean(result.requiresPassword),
+    reconciliation: result.reconciliation ?? null,
   }
 }
 

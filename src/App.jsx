@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowDownRight,
   ArrowLeftRight,
   ArrowUpRight,
@@ -925,7 +926,42 @@ function AccountCard({ account, onEdit }) {
   )
 }
 
-function ImportPage({ accounts, form, onFormChange, file, onFile, status, rows, warning, password, onPasswordChange, requiresPassword, onParse, onDemo, onReset, onUpdateRow, onSplit, onConfirm, onNavigate }) {
+function ReconciliationPanel({ reconciliation }) {
+  if (!reconciliation) return null
+
+  const { matches, difference } = reconciliation
+
+  return (
+    <div className={classNames('reconcile', matches ? 'reconcile--ok' : 'reconcile--warn')}>
+      <div className="reconcile__head">
+        <span className="reconcile__icon">{matches ? <ShieldCheck size={18} /> : <AlertTriangle size={18} />}</span>
+        <div>
+          <strong>Conferência de saldo do extrato</strong>
+          <span>
+            {reconciliation.periodStart && reconciliation.periodEnd
+              ? `Período ${formatDateLong(reconciliation.periodStart)} a ${formatDateLong(reconciliation.periodEnd)}`
+              : 'Período do extrato'}
+          </span>
+        </div>
+      </div>
+
+      <div className="reconcile__grid">
+        <div><span>Saldo inicial</span><strong>{formatCurrency(reconciliation.openingBalance)}</strong></div>
+        <div><span>Movimentações</span><strong>{formatCurrency(reconciliation.movement)}</strong></div>
+        <div><span>Saldo esperado</span><strong>{formatCurrency(reconciliation.expected)}</strong></div>
+        <div><span>Saldo no extrato</span><strong>{formatCurrency(reconciliation.closingBalance)}</strong></div>
+      </div>
+
+      <p className="reconcile__note">
+        {matches
+          ? 'A soma das movimentações leva exatamente do saldo inicial ao saldo que o banco imprime. Nenhuma linha ficou de fora.'
+          : `A soma das movimentações não chega ao saldo do extrato. Diferença de ${formatCurrency(Math.abs(difference))}. Revise as linhas antes de confirmar.`}
+      </p>
+    </div>
+  )
+}
+
+function ImportPage({ accounts, form, onFormChange, file, onFile, status, rows, warning, password, onPasswordChange, requiresPassword, onParse, onDemo, onReset, onUpdateRow, onSplit, onConfirm, onNavigate, reconciliation }) {
   const inputRef = useRef(null)
   const [dragging, setDragging] = useState(false)
   const availableAccounts = accounts.filter((account) => account.institution === form.institution)
@@ -999,6 +1035,7 @@ function ImportPage({ accounts, form, onFormChange, file, onFile, status, rows, 
         <section className="review-section">
           <div className="review-toolbar"><div><span className="eyebrow">Passo 2 de 3</span><h2>Revise os lançamentos</h2><p>Confira as sugestões antes de salvar. Você pode editar qualquer categoria.</p></div><button className="button button--ghost" onClick={onReset}><RefreshCw size={15} /> Trocar arquivo</button></div>
           <div className="review-stats"><div><strong>{rows.length}</strong><span>encontrados</span></div><div><strong className="text-green">{readyRows.length}</strong><span>prontos</span></div><div><strong className="text-orange">{duplicateRows.length}</strong><span>duplicados</span></div><div className="review-confidence"><Sparkles size={16} /><span>Classificação automática ativada</span></div></div>
+          <ReconciliationPanel reconciliation={reconciliation} />
           <div className="panel review-panel"><div className="review-panel__head"><div><strong>{form.institution} · {accounts.find((account) => account.id === form.accountId)?.name}</strong><span>{file?.name}</span></div><span className="review-panel__secure"><ShieldCheck size={14} /> Arquivo protegido</span></div><ReviewTable rows={rows} onUpdateRow={onUpdateRow} onSplit={onSplit} /></div>
           <div className="review-actions"><span><Info size={15} /> Duplicados e transferências internas serão ignorados no consolidado.</span><button className="button button--primary" onClick={onConfirm} disabled={!readyRows.length}><Check size={17} /> Confirmar {readyRows.length} lançamentos</button></div>
         </section>
@@ -1913,6 +1950,7 @@ function FinanceApp({ user }) {
   const [importWarning, setImportWarning] = useState('')
   const [importPassword, setImportPassword] = useState('')
   const [importRequiresPassword, setImportRequiresPassword] = useState(false)
+  const [importReconciliation, setImportReconciliation] = useState(null)
   const [cloudStatus, setCloudStatus] = useState('sincronizando')
   const [bellOpen, setBellOpen] = useState(false)
   const [alertSettings, setAlertSettings] = useState({ email: '', enabled: false, days_before: 1 })
@@ -2112,6 +2150,7 @@ function FinanceApp({ user }) {
       setImportFile(candidate.file)
       setImportRows(reviewedRows)
       setImportWarning(result.warnings[0] || '')
+      setImportReconciliation(result.reconciliation ?? null)
       setImportPassword('')
       setImportRequiresPassword(false)
       setImportStatus('review')
@@ -2347,6 +2386,7 @@ function FinanceApp({ user }) {
     if (!importFile || !importForm.accountId) return
     setImportStatus('parsing')
     setImportWarning('')
+    setImportReconciliation(null)
     try {
       const result = await parseStatement(importFile, importForm.institution, importForm.accountId, { password: importPassword })
       setImportRequiresPassword(Boolean(result.requiresPassword))
@@ -2365,6 +2405,7 @@ function FinanceApp({ user }) {
       })
       setImportRows(reviewedRows)
       setImportWarning(result.warnings[0] || '')
+      setImportReconciliation(result.reconciliation ?? null)
       setImportPassword('')
       setImportRequiresPassword(false)
       setImportStatus('review')
@@ -2403,7 +2444,7 @@ function FinanceApp({ user }) {
     showToast(`${newTransactions.length} lançamentos importados${reconciliation.matches.length ? ` · ${reconciliation.matches.length} boleto(s) conciliados` : ''}.`)
   }
 
-  const resetImport = () => { setImportFile(null); setImportStatus('idle'); setImportRows([]); setImportWarning(''); setImportPassword(''); setImportRequiresPassword(false) }
+  const resetImport = () => { setImportFile(null); setImportStatus('idle'); setImportRows([]); setImportWarning(''); setImportPassword(''); setImportRequiresPassword(false); setImportReconciliation(null) }
 
   const handleAddAccount = (form) => {
     const id = `acc-${form.institution.toLowerCase()}-${Date.now()}`
@@ -2730,7 +2771,7 @@ function FinanceApp({ user }) {
   const renderView = () => {
     if (activeView === 'dashboard') return <DashboardPage accounts={accounts} transactions={transactions} budgets={budgets} bills={bills} reminders={reminders} userName={userName} onNavigate={navigate} onImportDemo={() => { navigate('import'); handleDemo('Nubank') }} />
     if (activeView === 'transactions') return <TransactionsPage transactions={transactions} accounts={accounts} search={globalSearch} onSearch={setGlobalSearch} onImport={() => navigate('import')} onExport={handleExport} onIgnore={handleIgnoreTransaction} onSplit={openSplitTransaction} onAdd={() => openTransactionModal()} />
-    if (activeView === 'import') return <ImportPage accounts={accounts} form={importForm} onFormChange={(patch) => patch.institution ? handleInstitutionChange(patch.institution) : setImportForm((current) => ({ ...current, ...patch }))} file={importFile} onFile={handleFile} status={importStatus} rows={importRows} warning={importWarning} password={importPassword} onPasswordChange={setImportPassword} requiresPassword={importRequiresPassword} onParse={handleParse} onDemo={handleDemo} onReset={resetImport} onUpdateRow={handleUpdateRow} onSplit={openSplitReview} onConfirm={handleConfirmImport} onNavigate={navigate} />
+    if (activeView === 'import') return <ImportPage accounts={accounts} form={importForm} onFormChange={(patch) => patch.institution ? handleInstitutionChange(patch.institution) : setImportForm((current) => ({ ...current, ...patch }))} file={importFile} onFile={handleFile} status={importStatus} rows={importRows} warning={importWarning} password={importPassword} onPasswordChange={setImportPassword} requiresPassword={importRequiresPassword} onParse={handleParse} onDemo={handleDemo} onReset={resetImport} onUpdateRow={handleUpdateRow} onSplit={openSplitReview} onConfirm={handleConfirmImport} onNavigate={navigate} reconciliation={importReconciliation} />
     if (activeView === 'bills') return <BillsPage bills={bills} candidates={outlookCandidates} transactions={transactions} accounts={accounts} outlookAccount={outlookAccount} outlookStatus={outlookStatus} outlookMessage={outlookMessage} configured={isOutlookConfigured()} candidatePasswords={candidatePasswords} candidateBusy={candidateBusy} duplicateCount={duplicateBills.length + orphanDuplicateBudgets.length} onRemoveDuplicates={handleRemoveDuplicates} onConnect={handleConnectOutlook} onDisconnect={handleDisconnectOutlook} onSync={handleSyncOutlook} onAdd={() => openBillModal()} onEdit={openBillModal} onDelete={handleDeleteBill} onMatch={setBillMatchId} onLaunch={openTransactionModal} onReopen={handleReopenBill} onSaveAll={handleSaveAllCandidates} onDiscardAll={handleDiscardAllCandidates} onProcessCandidate={handleProcessCandidate} onCandidatePasswordChange={(id, value) => setCandidatePasswords((current) => ({ ...current, [id]: value }))} onReviewCandidate={(candidate) => openBillModal({ ...candidate, source: 'outlook', sender: candidate.sender, receivedAt: candidate.receivedAt })} onReviewManualBill={(bill) => openBillModal(bill)} onDiscardCandidate={handleDiscardCandidate} onImportStatement={(candidate) => { setStatementCandidate(candidate); setStatementModalOpen(true) }} />
     if (activeView === 'accounts') return <AccountsPage accounts={accounts} transactions={transactions} onAdd={() => { setEditingAccount(null); setAccountModalOpen(true) }} onEdit={(account) => { setEditingAccount(account); setAccountModalOpen(true) }} onImport={() => navigate('import')} />
     if (activeView === 'budgets') return <BudgetsPage budgets={budgets} groups={budgetGroups} income={budgetIncome} transactions={transactions} accounts={accounts} bills={bills} onAdd={openBudgetModal} onEdit={openBudgetModal} onDelete={handleDeleteBudget} onUpdateGroup={handleUpdateGroup} onIncomeChange={handleIncomeChange} onOpenCopy={openCopyBudgetModal} />

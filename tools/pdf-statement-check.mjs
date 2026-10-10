@@ -38,7 +38,7 @@ function grab(name) {
   throw new Error(`nao fechei ${name}`)
 }
 
-const NAMES = [
+const names = [
   'parseAmount',
   'groupCellsIntoLines',
   'findHeaderCell',
@@ -46,12 +46,13 @@ const NAMES = [
   'moneyColumnFor',
   'firstMoneyIn',
   'rowsFromLine',
+  'buildReconciliation',
   'extractTableRows',
 ]
 
 const constants = src.slice(src.indexOf('const TABLE_LINE_TOLERANCE'), src.indexOf('function groupCellsIntoLines')).trim()
-const block = NAMES.map(grab).join('\n\n')
-const { extractTableRows, parseAmount } = new Function(`${constants}\n${block}; return { extractTableRows, parseAmount }`)()
+const block = names.map(grab).join('\n\n')
+const { extractTableRows, buildReconciliation, parseAmount } = new Function(`${constants}\n${block}; return { extractTableRows, buildReconciliation, parseAmount }`)()
 
 const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
 const doc = await pdfjs.getDocument({ data: new Uint8Array(readFileSync(pdfPath)) }).promise
@@ -72,7 +73,9 @@ for (let n = 1; n <= doc.numPages; n += 1) {
   )
 }
 
-const rows = extractTableRows(pageCells)
+const extracted = extractTableRows(pageCells)
+const rows = extracted.rows
+const recon = extracted.reconciliation
 
 let failures = 0
 if (!rows.length) {
@@ -105,6 +108,30 @@ for (const row of rows) {
 
 console.log(`\n${rows.length} linhas extraidas de ${doc.numPages} paginas`)
 for (const row of rows) console.log(`${row.date} | ${row.description} | ${row.amount}`)
+
+if (!recon) {
+  failures += 1
+  console.log('FALHA nenhuma conferencia de saldo foi produzida')
+} else {
+  console.log('\nconferencia de saldo')
+  console.log(`  periodo        ${recon.periodStart} a ${recon.periodEnd}`)
+  console.log(`  saldo inicial  ${recon.openingBalance.toFixed(2)}`)
+  console.log(`  movimentacoes  ${recon.movement.toFixed(2)}`)
+  console.log(`  esperado       ${recon.expected.toFixed(2)}`)
+  console.log(`  extrato final  ${recon.closingBalance.toFixed(2)}`)
+  console.log(`  diferenca      ${recon.difference.toFixed(2)} ${recon.matches ? '(confere)' : '(NAO CONFERE)'}`)
+  if (!recon.matches) failures += 1
+
+  // A conferencia precisa acusar linha faltando, entao simulamos uma remocao.
+  const semPrimeira = rows.slice(1)
+  const simulado = buildReconciliation(semPrimeira, { balance: recon.openingBalance, amountValue: 0 }, { balance: recon.closingBalance })
+  if (semPrimeira.length && simulado && simulado.matches) {
+    failures += 1
+    console.log('FALHA a conferencia aceitou uma movimentacao faltando')
+  } else if (semPrimeira.length) {
+    console.log(`  remocao simulada -> diferenca ${simulado.difference.toFixed(2)} (acusada)`)
+  }
+}
 
 if (failures) console.log(`\n${failures} problema(s)`)
 else console.log('\n tudo certo')
