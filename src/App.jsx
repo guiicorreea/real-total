@@ -3177,7 +3177,7 @@ function FinanceApp({ user }) {
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props)
-    this.state = { error: null }
+    this.state = { error: null, stack: '' }
   }
 
   static getDerivedStateFromError(error) {
@@ -3185,6 +3185,8 @@ class ErrorBoundary extends React.Component {
   }
 
   componentDidCatch(error, info) {
+    const stack = [error?.stack, info?.componentStack].filter(Boolean).join('\n\n')
+    this.setState({ stack })
     console.error('Falha ao renderizar o Real Total:', error, info?.componentStack)
   }
 
@@ -3197,9 +3199,10 @@ class ErrorBoundary extends React.Component {
           <h2>Algo quebrou ao abrir esta tela</h2>
           <p>Seus dados continuam salvos na nuvem. Recarregue a página para continuar.</p>
           <pre className="crash-panel__detail">{String(this.state.error?.message ?? this.state.error)}</pre>
+          {this.state.stack && <pre className="crash-panel__stack">{this.state.stack}</pre>}
           <div className="crash-panel__actions">
             <button className="button button--primary" onClick={() => window.location.reload()}><RefreshCw size={16} /> Recarregar</button>
-            <button className="button button--ghost" onClick={() => this.setState({ error: null })}>Tentar de novo sem recarregar</button>
+            <button className="button button--ghost" onClick={() => this.setState({ error: null, stack: '' })}>Tentar de novo sem recarregar</button>
           </div>
         </section>
       </div>
