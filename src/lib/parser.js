@@ -336,12 +336,21 @@ function parsePdfText(text) {
     const start = dateMatches[index].index + dateMatches[index][0].length
     const end = dateMatches[index + 1]?.index ?? cleanText.length
     const segment = cleanText.slice(start, end).trim()
-    const amountMatch = segment.match(/(-?\s*R?\$\s*[\d.]+,\d{2})\s*$/)
+    if (!segment) continue
+
+    // No extrato digital o valor fecha a linha, então é o primeiro caminho.
+    let amountMatch = segment.match(/(-?\s*R?\$\s*[\d.]+,\d{2})\s*$/)
+
+    // OCR costuma embaralhar as colunas e devolver o valor no meio da linha.
+    if (!amountMatch) amountMatch = segment.match(/(-?\s*R?\$\s*[\d.]+,\d{2})/)
     if (!amountMatch) continue
 
-    const description = segment.slice(0, amountMatch.index).replace(/[-–—:]+$/, '').trim()
+    const before = segment.slice(0, amountMatch.index).replace(/[-–—:]+$/, '').trim()
+    const after = segment.slice(amountMatch.index + amountMatch[0].length).replace(/^[-–—:]+/, '').trim()
+    const description = before || after
+
     rows.push({
-      date: amountMatch ? dateMatches[index][1] : '',
+      date: dateMatches[index][1],
       description,
       amount: amountMatch[1],
     })
@@ -349,6 +358,11 @@ function parsePdfText(text) {
 
   return rows
 }
+
+// Extrato bancário vem quase sempre em PDF digitalizado, sem texto embutido.
+// Sem OCR não há o que ler, então cada página é rasterizada e passada no
+// tesseract. Só cai neste caminho quando o texto extraído não gerou linhas.
+const OCR_STATEMENT_MAX_PAGES = 3
 
 async function parsePdf(file, password = '') {
   try {
@@ -364,7 +378,22 @@ async function parsePdf(file, password = '') {
       pages.push(content.items.map((item) => item.str).join(' '))
     }
 
-    const rows = parsePdfText(pages.join('\n'))
+    let rows = parsePdfText(pages.join('\n'))
+
+    if (!rows.length) {
+      const limit = Math.min(document.numPages, OCR_STATEMENT_MAX_PAGES)
+      for (let pageNumber = 1; pageNumber <= limit && !rows.length; pageNumber += 1) {
+        const canvas = await renderPdfPage(pdfjs, document, pageNumber)
+        if (!canvas) continue
+        for (const mode of ['4', '6']) {
+          const ocrText = await recognizeWithOcr(canvas, mode)
+          if (!ocrText) continue
+          rows = parsePdfText(ocrText)
+          if (rows.length) break
+        }
+      }
+    }
+
     return {
       rows,
       requiresPassword: false,
@@ -552,9 +581,9 @@ async function getOcrWorker() {
   return ocrWorkerPromise
 }
 
-async function renderFirstPdfPage(pdfjs, pdfDocument) {
+async function renderPdfPage(pdfjs, pdfDocument, pageNumber) {
   try {
-    const page = await pdfDocument.getPage(1)
+    const page = await pdfDocument.getPage(pageNumber)
     const viewport = page.getViewport({ scale: 3 })
     const canvas = window.document.createElement('canvas')
     canvas.width = Math.ceil(viewport.width)
@@ -564,6 +593,10 @@ async function renderFirstPdfPage(pdfjs, pdfDocument) {
   } catch {
     return null
   }
+}
+
+async function renderFirstPdfPage(pdfjs, pdfDocument) {
+  return renderPdfPage(pdfjs, pdfDocument, 1)
 }
 
 async function recognizeWithOcr(canvas, mode) {

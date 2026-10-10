@@ -2088,7 +2088,10 @@ function FinanceApp({ user }) {
       showToast('PDF não está mais disponível. Sincronize novamente.', 'error')
       return
     }
-    setOutlookMessage('Abrindo o extrato na tela de revisão...')
+    const isPdf = candidate.file?.type === 'application/pdf' || String(candidate.file?.name ?? '').toLowerCase().endsWith('.pdf')
+    setOutlookMessage(isPdf
+      ? 'Lendo o PDF. Se estiver digitalizado, o OCR leva alguns segundos.'
+      : 'Abrindo o extrato na tela de revisão...')
     try {
       const result = await parseStatement(candidate.file, institution, accountId, { password })
       if (!result.rows.length) {
