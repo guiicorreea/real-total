@@ -914,3 +914,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, [role='button']
 .split-add-button:disabled { opacity: 0.5; cursor: not-allowed; }
 .split-plan-fix { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 11px 13px; border: 1px solid #dfdcfb; border-radius: 10px; background: #f7f6ff; }
 .split-plan-fix > span { flex: 1 1 200px; font-size: 0.79rem; color: #55526a; line-height: 1.4; }
+.review-table tr.row-ignored { opacity: 0.45; }
+.review-table tr.row-ignored .review-description strong { text-decoration: line-through; }
+.duplicate-label--off { color: #6b6880; }

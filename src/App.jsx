@@ -1028,12 +1028,15 @@ function OutlookImportCard({ configured, account, status, message, candidates, b
   )
 }
 
-function ImportPage({ accounts, form, onFormChange, file, onFile, status, rows, warning, password, onPasswordChange, requiresPassword, onParse, onDemo, onReset, onUpdateRow, onSplit, onConfirm, onNavigate, reconciliation, outlook }) {
+function ImportPage({ accounts, form, onFormChange, file, onFile, status, rows, warning, password, onPasswordChange, requiresPassword, onParse, onDemo, onReset, onUpdateRow, onSplit, onToggleRow, onKeepMonth, onConfirm, onNavigate, reconciliation, outlook }) {
   const inputRef = useRef(null)
   const [dragging, setDragging] = useState(false)
   const availableAccounts = accounts.filter((account) => account.institution === form.institution)
   const readyRows = rows.filter((row) => row.status !== 'duplicate' && row.status !== 'ignored')
   const duplicateRows = rows.filter((row) => row.status === 'duplicate')
+  const ignoredRows = rows.filter((row) => row.status === 'ignored')
+  const currentMonth = monthKeyFromDate(new Date().toISOString())
+  const outsideMonth = rows.filter((row) => monthKeyFromDate(row.date) !== currentMonth && row.status !== 'duplicate').length
 
   const chooseFile = (nextFile) => {
     if (nextFile) onFile(nextFile)
@@ -1103,10 +1106,10 @@ function ImportPage({ accounts, form, onFormChange, file, onFile, status, rows, 
         </>
       ) : (
         <section className="review-section">
-          <div className="review-toolbar"><div><span className="eyebrow">Passo 2 de 3</span><h2>Revise os lançamentos</h2><p>Confira as sugestões antes de salvar. Você pode editar qualquer categoria.</p></div><button className="button button--ghost" onClick={onReset}><RefreshCw size={15} /> Trocar arquivo</button></div>
-          <div className="review-stats"><div><strong>{rows.length}</strong><span>encontrados</span></div><div><strong className="text-green">{readyRows.length}</strong><span>prontos</span></div><div><strong className="text-orange">{duplicateRows.length}</strong><span>duplicados</span></div><div className="review-confidence"><Sparkles size={16} /><span>Classificação automática ativada</span></div></div>
+          <div className="review-toolbar"><div><span className="eyebrow">Passo 2 de 3</span><h2>Revise os lançamentos</h2><p>Confira as sugestões antes de salvar. Desmarque o que não quiser importar.</p></div><div className="heading-actions">{outsideMonth > 0 && <button className="button button--ghost" onClick={onKeepMonth}><CalendarDays size={15} /> Manter só {formatMonthLabel(currentMonth)} ({outsideMonth} fora)</button>}<button className="button button--ghost" onClick={onReset}><RefreshCw size={15} /> Trocar arquivo</button></div></div>
+          <div className="review-stats"><div><strong>{rows.length}</strong><span>encontrados</span></div><div><strong className="text-green">{readyRows.length}</strong><span>prontos</span></div><div><strong className="text-orange">{duplicateRows.length}</strong><span>duplicados</span></div>{ignoredRows.length > 0 && <div><strong className="text-red">{ignoredRows.length}</strong><span>desmarcados</span></div>}<div className="review-confidence"><Sparkles size={16} /><span>Classificação automática ativada</span></div></div>
           <ReconciliationPanel reconciliation={reconciliation} />
-          <div className="panel review-panel"><div className="review-panel__head"><div><strong>{form.institution} · {accounts.find((account) => account.id === form.accountId)?.name}</strong><span>{file?.name}</span></div><span className="review-panel__secure"><ShieldCheck size={14} /> Arquivo protegido</span></div><ReviewTable rows={rows} onUpdateRow={onUpdateRow} onSplit={onSplit} /></div>
+          <div className="panel review-panel"><div className="review-panel__head"><div><strong>{form.institution} · {accounts.find((account) => account.id === form.accountId)?.name}</strong><span>{file?.name}</span></div><span className="review-panel__secure"><ShieldCheck size={14} /> Arquivo protegido</span></div><ReviewTable rows={rows} onUpdateRow={onUpdateRow} onSplit={onSplit} onToggle={onToggleRow} /></div>
           <div className="review-actions"><span><Info size={15} /> Duplicados e transferências internas serão ignorados no consolidado.</span><button className="button button--primary" onClick={onConfirm} disabled={!readyRows.length}><Check size={17} /> Confirmar {readyRows.length} lançamentos</button></div>
         </section>
       )}
@@ -1118,11 +1121,11 @@ function Step({ number, label, active, done }) {
   return <div className={classNames('step', active && 'step--active', done && 'step--done')}><span>{done ? <Check size={14} /> : number}</span><strong>{label}</strong></div>
 }
 
-function ReviewTable({ rows, onUpdateRow, onSplit }) {
+function ReviewTable({ rows, onUpdateRow, onSplit, onToggle }) {
   return (
     <div className="table-wrap review-table-wrap">
-      <table className="transaction-table review-table"><thead><tr><th>Data</th><th>Descrição original</th><th>Tipo</th><th>Categoria</th><th>Confiança</th><th className="align-right">Valor</th><th /></tr></thead>
-        <tbody>{rows.map((row) => { const isSplit = row.allocations?.length > 1; return <tr key={row.id} className={row.status === 'duplicate' ? 'row-duplicate' : ''}><td><span className="date-cell">{formatDate(row.date)}</span></td><td><div className="review-description"><strong>{row.description}</strong><span>{isSplit ? `Desdobrado em ${row.allocations.length} categorias` : `${row.institution} · conta vinculada`}</span></div></td><td><TypeBadge type={row.type} /></td><td>{isSplit ? <span className="split-pill"><SlidersHorizontal size={12} /> Desdobrado</span> : <select className="inline-select" value={row.category} onChange={(event) => onUpdateRow(row.id, { category: event.target.value })}>{categoryOptions.map((category) => <option key={category}>{category}</option>)}</select>}</td><td><span className={classNames('confidence', row.confidence < 0.85 && 'confidence--low')}><span className="confidence__bar"><i style={{ width: `${row.confidence * 100}%` }} /></span>{Math.round(row.confidence * 100)}%</span></td><td className={classNames('align-right', 'amount-cell', row.type === 'expense' ? 'amount-cell--negative' : 'amount-cell--positive')}>{row.type === 'expense' ? '−' : '+'} {formatCurrency(row.amount)}</td><td className="align-right">{row.status === 'duplicate' ? <span className="duplicate-label">Duplicado</span> : <div className="review-row-actions">{row.type === 'expense' && <button className="icon-button icon-button--subtle" onClick={() => onSplit(row)} aria-label="Desdobrar transação"><SlidersHorizontal size={16} /></button>}<CheckCircle2 className="row-check" size={17} /></div>}</td></tr> })}</tbody></table>
+      <table className="transaction-table review-table"><thead><tr><th className="select-cell" aria-label="Importar" /><th>Data</th><th>Descrição original</th><th>Tipo</th><th>Categoria</th><th>Confiança</th><th className="align-right">Valor</th><th /></tr></thead>
+        <tbody>{rows.map((row) => { const isSplit = row.allocations?.length > 1; const off = row.status === 'ignored'; const dup = row.status === 'duplicate'; return <tr key={row.id} className={classNames(dup && 'row-duplicate', off && 'row-ignored')}><td className="select-cell"><input type="checkbox" checked={!off && !dup} disabled={dup} onChange={() => onToggle?.(row.id)} aria-label={`Importar ${row.description}`} /></td><td><span className="date-cell">{formatDate(row.date)}</span></td><td><div className="review-description"><strong>{row.description}</strong><span>{isSplit ? `Desdobrado em ${row.allocations.length} categorias` : `${row.institution} · conta vinculada`}</span></div></td><td><TypeBadge type={row.type} /></td><td>{isSplit ? <span className="split-pill"><SlidersHorizontal size={12} /> Desdobrado</span> : <select className="inline-select" value={row.category} onChange={(event) => onUpdateRow(row.id, { category: event.target.value })}>{categoryOptions.map((category) => <option key={category}>{category}</option>)}</select>}</td><td><span className={classNames('confidence', row.confidence < 0.85 && 'confidence--low')}><span className="confidence__bar"><i style={{ width: `${row.confidence * 100}%` }} /></span>{Math.round(row.confidence * 100)}%</span></td><td className={classNames('align-right', 'amount-cell', row.type === 'expense' ? 'amount-cell--negative' : 'amount-cell--positive')}>{row.type === 'expense' ? '−' : '+'} {formatCurrency(row.amount)}</td><td className="align-right">{dup ? <span className="duplicate-label">Duplicado</span> : off ? <span className="duplicate-label duplicate-label--off">Desmarcado</span> : <div className="review-row-actions">{row.type === 'expense' && <button className="icon-button icon-button--subtle" onClick={() => onSplit(row)} aria-label="Desdobrar transação"><SlidersHorizontal size={16} /></button>}<CheckCircle2 className="row-check" size={17} /></div>}</td></tr> })}</tbody></table>
     </div>
   )
 }
@@ -2640,6 +2643,19 @@ function FinanceApp({ user }) {
 
   const handleUpdateRow = (id, patch) => setImportRows((current) => current.map((row) => row.id === id ? { ...row, ...patch } : row))
 
+  // Desmarcar uma linha tira ela da importação sem apagá-la da tela, para
+  // o usuário reconsiderar antes de confirmar.
+  const handleToggleImportRow = (id) => setImportRows((current) => current.map((row) => {
+    if (row.id !== id || row.status === 'duplicate') return row
+    return { ...row, status: row.status === 'ignored' ? 'ready' : 'ignored' }
+  }))
+
+  const handleKeepCurrentMonth = () => {
+    const currentMonth = monthKeyFromDate(new Date().toISOString())
+    setImportRows((current) => current.map((row) => (row.status === 'duplicate' || monthKeyFromDate(row.date) === currentMonth ? row : { ...row, status: 'ignored' })))
+    showToast(`Mantidos apenas os lançamentos de ${formatMonthLabel(currentMonth)}.`)
+  }
+
   const handleConfirmImport = () => {
     const ready = importRows.filter((row) => row.status !== 'duplicate' && row.status !== 'ignored')
     if (!ready.length) return
@@ -3048,7 +3064,7 @@ function FinanceApp({ user }) {
   const renderView = () => {
     if (activeView === 'dashboard') return <DashboardPage accounts={accounts} transactions={transactions} budgets={budgets} bills={bills} reminders={reminders} userName={userName} onNavigate={navigate} onImportDemo={() => { navigate('import'); handleDemo('Nubank') }} />
     if (activeView === 'transactions') return <TransactionsPage transactions={transactions} accounts={accounts} search={globalSearch} onSearch={setGlobalSearch} onImport={() => navigate('import')} onExport={handleExport} onIgnore={handleIgnoreTransaction} onSplit={openSplitTransaction} onAdd={() => openTransactionModal()} onDelete={handleDeleteTransactions} onDeleteAll={handleDeleteAllTransactions} />
-    if (activeView === 'import') return <ImportPage accounts={accounts} form={importForm} onFormChange={(patch) => patch.institution ? handleInstitutionChange(patch.institution) : setImportForm((current) => ({ ...current, ...patch }))} file={importFile} onFile={handleFile} status={importStatus} rows={importRows} warning={importWarning} password={importPassword} onPasswordChange={setImportPassword} requiresPassword={importRequiresPassword} onParse={handleParse} onDemo={handleDemo} onReset={resetImport} onUpdateRow={handleUpdateRow} onSplit={openSplitReview} onConfirm={handleConfirmImport} onNavigate={navigate} reconciliation={importReconciliation} outlook={{
+    if (activeView === 'import') return <ImportPage accounts={accounts} form={importForm} onFormChange={(patch) => patch.institution ? handleInstitutionChange(patch.institution) : setImportForm((current) => ({ ...current, ...patch }))} file={importFile} onFile={handleFile} status={importStatus} rows={importRows} warning={importWarning} password={importPassword} onPasswordChange={setImportPassword} requiresPassword={importRequiresPassword} onParse={handleParse} onDemo={handleDemo} onReset={resetImport} onUpdateRow={handleUpdateRow} onSplit={openSplitReview} onToggleRow={handleToggleImportRow} onKeepMonth={handleKeepCurrentMonth} onConfirm={handleConfirmImport} onNavigate={navigate} reconciliation={importReconciliation} outlook={{
     configured: isOutlookConfigured(),
     account: outlookAccount,
     status: outlookStatus,
