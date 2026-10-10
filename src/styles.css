@@ -902,3 +902,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, [role='button']
 .split-mode__btn--on { background: #f0eefc; border-color: #c9c4f2; color: #4b45a8; }
 
 .split-hint { font-size: 0.78rem; color: #6b6880; line-height: 1.45; }
+.split-allocation-row--remainder { border-style: dashed; background: #fbfaff; }
+.split-allocation-row--remainder .input-prefix input { background: #f4f3fb; }
+.split-remainder-label { font-size: 0.78rem; font-weight: 600; color: #6b6880; }
+.split-planned-hint--over { color: #a2660a; font-weight: 600; }
+.split-add-button:disabled { opacity: 0.5; cursor: not-allowed; }
