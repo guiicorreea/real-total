@@ -69,7 +69,10 @@ function parseAmount(value) {
 
   let text = String(value).trim()
   const parenthesized = text.startsWith('(') && text.endsWith(')')
-  const hasExplicitMinus = text.includes('-')
+  // Bancos usam o sinal de menos tipográfico (U+2212), o traço e o travessão.
+  // Sem tratar isso, uma despesa de −R$ 300,00 entrava como receita de R$ 300,00.
+  const hasExplicitMinus = /[-−–—]/.test(text)
+  text = text.replace(/[−–—]/g, '-')
   text = text.replace(/[^\d,.-]/g, '')
 
   if (!text) return 0
@@ -202,6 +205,12 @@ function inferType(rawType, signedAmount, description) {
   const text = normalizeText(description)
 
   if (type.includes('transfer') || text.includes('transferencia') || text.includes('pix enviado') && text.includes('pix recebido')) {
+    return 'transfer'
+  }
+
+  // Dinheiro guardado e resgatado é a mesma quantia saindo e voltando do
+  // cofrinho. Contar como receita e despesa infla os dois lados do mês.
+  if (/dinheiroguardado|dinheiroresgatado|cofrinho|caixinha|guardadono|resgatadodo|guardou|resgatou/.test(`${type} ${text}`)) {
     return 'transfer'
   }
   if (
