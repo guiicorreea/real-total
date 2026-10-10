@@ -917,3 +917,4 @@ button:focus-visible, input:focus-visible, select:focus-visible, [role='button']
 .review-table tr.row-ignored { opacity: 0.45; }
 .review-table tr.row-ignored .review-description strong { text-decoration: line-through; }
 .duplicate-label--off { color: #6b6880; }
+.split-remaining--error { color: #a1201a; background: #fdeeed; }
