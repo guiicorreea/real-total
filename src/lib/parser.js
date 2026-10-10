@@ -232,6 +232,14 @@ function inferCategory(description, type) {
   if (type === 'transfer') return 'Transferência'
   const text = normalizeText(description)
 
+  // Receita tem vocabulário próprio. Sem esta passagem antes das regras de
+  // despesa, "aluguel recebido" cairia em Moradia e pró-labore em Outros.
+  if (type === 'income') {
+    if (/rendimento|rendimentocaixinha|dividendo|cdb|tesouro|resgate|juros|bonus/.test(text)) return 'Investimentos'
+    if (/salario|folha|prolabore|notafiscal|honorario|contabilidade|pagamentodecliente|adiantamento/.test(text)) return 'Trabalho'
+    if (/servico|servicos|aluguelrecebido|locacao|freela|projeto|comissao/.test(text)) return 'Serviços'
+  }
+
   if (text.includes('salario') || text.includes('salário') || text.includes('folha') || text.includes('pagamento')) return 'Trabalho'
   if (text.includes('rendimento') || text.includes('dividendo') || text.includes('cdb') || text.includes('tesouro') || text.includes('investimento')) return 'Investimentos'
   if (text.includes('aluguel') || text.includes('condominio') || text.includes('energia') || text.includes('agua') || text.includes('internet')) return 'Moradia'
