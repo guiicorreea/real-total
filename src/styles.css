@@ -888,3 +888,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, [role='button']
 .split-budget-button:hover { background: #f2f0fe; }
 
 .split-planned-hint { font-size: 0.72rem; color: #6b6880; white-space: nowrap; }
+.bulk-bar { display: flex; align-items: center; gap: 14px; padding: 11px 16px; border: 1px solid #dfdcfb; border-radius: 11px; background: #f5f4fe; }
+.bulk-bar > span { flex: 1; font-size: 0.85rem; }
+.table-meta--bulk { padding-top: 2px; }
+.text-button--danger { color: #b3261e; }
+.text-button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.select-cell { width: 38px; text-align: center; }
+.select-cell input { width: 15px; height: 15px; accent-color: #4b45a8; cursor: pointer; }
+.transaction-table tbody tr.is-selected { background: #f5f4fe; }

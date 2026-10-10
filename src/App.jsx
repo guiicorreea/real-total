@@ -860,14 +860,14 @@ function AccountRow({ account }) {
   )
 }
 
-function TransactionTable({ transactions, accounts, compact = false, onCategoryChange, onIgnore, onSplit }) {
+function TransactionTable({ transactions, accounts, compact = false, onCategoryChange, onIgnore, onSplit, selected = [], onToggle }) {
   const accountMap = Object.fromEntries(accounts.map((account) => [account.id, account]))
   if (!transactions.length) return <EmptyState icon={Receipt} title="Nenhuma movimentação" description="Quando você importar um extrato, os lançamentos aparecerão aqui." />
 
   return (
     <div className={classNames('table-wrap', compact && 'table-wrap--compact')}>
       <table className="transaction-table">
-        <thead><tr><th>Transação</th><th>Categoria</th><th>Conta</th><th>Data</th><th className="align-right">Valor</th>{!compact && <th aria-label="Ações" />}</tr></thead>
+        <thead><tr>{onToggle && <th className="select-cell" aria-label="Selecionar" />}<th>Transação</th><th>Categoria</th><th>Conta</th><th>Data</th><th className="align-right">Valor</th>{!compact && <th aria-label="Ações" />}</tr></thead>
         <tbody>
           {transactions.map((transaction) => {
             const account = accountMap[transaction.accountId]
@@ -876,7 +876,8 @@ function TransactionTable({ transactions, accounts, compact = false, onCategoryC
             const isSplit = allocations.length > 1
             const displayCategory = isSplit ? allocations[0].category : transaction.category
             return (
-              <tr key={transaction.id} className={transaction.status === 'ignored' ? 'is-ignored' : ''}>
+              <tr key={transaction.id} className={classNames(transaction.status === 'ignored' && 'is-ignored', onToggle && selected.includes(transaction.id) && 'is-selected')}>
+                {onToggle && <td className="select-cell"><input type="checkbox" checked={selected.includes(transaction.id)} onChange={() => onToggle(transaction.id)} aria-label={`Selecionar ${transaction.description}`} /></td>}
                 <td><div className="transaction-cell"><CategoryIcon category={displayCategory} /><div><strong>{transaction.merchant || transaction.description}</strong><span>{isSplit ? `Desdobrado em ${allocations.length} categorias` : transaction.description !== transaction.merchant ? transaction.description : transaction.institution}</span></div></div></td>
                 <td>{onCategoryChange ? <select className="inline-select" value={transaction.category} onChange={(event) => onCategoryChange(transaction.id, event.target.value)}>{categoryOptions.map((category) => <option key={category}>{category}</option>)}</select> : isSplit ? <span className="split-pill"><SlidersHorizontal size={12} /> Desdobrado</span> : <CategoryPill category={transaction.category} />}</td>
                 <td><span className="account-cell"><AccountLogo institution={account?.institution ?? transaction.institution} size="small" />{account?.name ?? 'Conta removida'}</span></td>
@@ -1188,10 +1189,11 @@ function TransactionModal({ open, onClose, onSave, accounts, bills, linkedBill }
   )
 }
 
-function TransactionsPage({ transactions, accounts, search, onSearch, onImport, onExport, onIgnore, onSplit, onAdd }) {
+function TransactionsPage({ transactions, accounts, search, onSearch, onImport, onExport, onIgnore, onSplit, onAdd, onDelete, onDeleteAll }) {
   const [categoryFilter, setCategoryFilter] = useState('Todas')
   const [typeFilter, setTypeFilter] = useState('Todos')
   const [accountFilter, setAccountFilter] = useState('Todas')
+  const [rawSelection, setRawSelection] = useState([])
   const filtered = transactions.filter((transaction) => {
     const query = search.trim().toLowerCase()
     const matchesSearch = !query || `${transaction.description} ${transaction.merchant} ${transaction.institution}`.toLowerCase().includes(query)
@@ -1200,11 +1202,16 @@ function TransactionsPage({ transactions, accounts, search, onSearch, onImport, 
     const matchesAccount = accountFilter === 'Todas' || transaction.accountId === accountFilter
     return matchesSearch && matchesCategory && matchesType && matchesAccount
   })
+  // Seleção nunca sobrevive a uma mudança de filtro: evitar apagar algo que
+  // não está mais visível na tela.
+  const filteredIds = filtered.map((transaction) => transaction.id)
+  const selection = rawSelection.filter((id) => filteredIds.includes(id))
+  const allSelected = filteredIds.length > 0 && selection.length === filteredIds.length
 
   return (
     <div className="page-stack">
       <section className="page-heading"><div><span className="eyebrow">Movimentações consolidadas</span><h1>Transações</h1><p>Consulte, filtre e acompanhe todos os lançamentos das suas contas.</p></div><div className="heading-actions"><button className="button button--soft" onClick={onAdd}><Plus size={16} /> Nova transação</button><button className="button button--ghost" onClick={onExport}><Download size={16} /> Exportar</button><button className="button button--primary" onClick={onImport}><Upload size={16} /> Importar extrato</button></div></section>
-      <section className="panel transactions-panel"><div className="filters-row"><div className="search-field search-field--wide"><Search size={16} /><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Buscar por descrição ou instituição" /></div><span className="select-wrap"><Filter size={15} /><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option>Todas</option>{categoryOptions.map((category) => <option key={category}>{category}</option>)}</select><ChevronDown size={14} /></span><span className="select-wrap"><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option>Todos</option><option value="income">Entradas</option><option value="expense">Saídas</option><option value="transfer">Transferências</option></select><ChevronDown size={14} /></span><span className="select-wrap"><select value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}><option>Todas</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select><ChevronDown size={14} /></span></div><div className="table-meta"><span><strong>{filtered.length}</strong> lançamentos encontrados</span><span className="table-meta__hint"><ShieldCheck size={14} /> Dados atualizados agora</span></div><TransactionTable transactions={filtered} accounts={accounts} onIgnore={onIgnore} onSplit={onSplit} /></section>
+      <section className="panel transactions-panel"><div className="filters-row"><div className="search-field search-field--wide"><Search size={16} /><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Buscar por descrição ou instituição" /></div><span className="select-wrap"><Filter size={15} /><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option>Todas</option>{categoryOptions.map((category) => <option key={category}>{category}</option>)}</select><ChevronDown size={14} /></span><span className="select-wrap"><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option>Todos</option><option value="income">Entradas</option><option value="expense">Saídas</option><option value="transfer">Transferências</option></select><ChevronDown size={14} /></span><span className="select-wrap"><select value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}><option>Todas</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select><ChevronDown size={14} /></span></div><div className="table-meta"><span><strong>{filtered.length}</strong> lançamentos encontrados</span><span className="table-meta__hint"><ShieldCheck size={14} /> Dados atualizados agora</span></div>{selection.length > 0 && <div className="bulk-bar"><span><strong>{selection.length}</strong> selecionado{selection.length === 1 ? '' : 's'}</span><button className="text-button" onClick={() => setRawSelection([])}>Limpar seleção</button><button className="button button--soft" onClick={() => onDelete(selection)}><Trash2 size={15} /> Apagar selecionados</button></div>}<div className="table-meta table-meta--bulk"><button type="button" className="text-button" onClick={() => setRawSelection(allSelected ? [] : filtered.map((transaction) => transaction.id))}>{allSelected ? 'Desmarcar todos' : 'Marcar todos os listados'}</button><button type="button" className="text-button text-button--danger" onClick={onDeleteAll} disabled={!transactions.length}>Apagar todos os lançamentos</button></div><TransactionTable transactions={filtered} accounts={accounts} onIgnore={onIgnore} onSplit={onSplit} selected={selection} onToggle={(id) => setRawSelection((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])} /></section>
     </div>
   )
 }
@@ -2910,6 +2917,43 @@ function FinanceApp({ user }) {
     showToast(isManual ? 'Lançamento removido e saldo da conta ajustado.' : 'Lançamento removido da lista.')
   }
 
+  // Remoção em lote. Usa a mesma regra da remoção individual: estorno do
+  // saldo nos lançamentos manuais e volta do boleto para pendente.
+  const handleDeleteTransactions = (ids) => {
+    const selected = transactions.filter((item) => ids.includes(item.id))
+    if (!selected.length) return
+
+    const manuals = selected.filter((item) => item.source === 'manual')
+    const linkedBillIds = selected.map((item) => item.linkedBillId).filter(Boolean)
+    const message = selected.length === 1
+      ? 'Remover 1 lançamento?\n\nEle sai das listas e do cálculo de realizado do orçamento.'
+      : `Remover ${selected.length} lançamentos?\n\nEles saem das listas e do cálculo de realizado do orçamento.${linkedBillIds.length ? `\n\n${linkedBillIds.length} boleto(s) voltam para pendente.` : ''}`
+    if (!window.confirm(message)) return
+
+    if (manuals.length) setAccounts((current) => manuals.reduce((acc, transaction) => adjustBalancesForTransaction(acc, transaction, -1), current))
+    if (linkedBillIds.length) {
+      setBills((current) => current.map((bill) => (linkedBillIds.includes(bill.id) ? {
+        ...bill,
+        status: 'pending',
+        paidAt: null,
+        matchedTransactionId: null,
+        matchConfidence: null,
+        manualMatch: false,
+        paidAmount: null,
+        amountDifference: null,
+      } : bill)))
+    }
+    setTransactions((current) => current.filter((item) => !ids.includes(item.id)))
+    showToast(`${selected.length} lançamento(s) removido(s).`)
+  }
+
+  const handleDeleteAllTransactions = () => {
+    if (!transactions.length) return
+    if (!window.confirm(`Apagar TODOS os ${transactions.length} lançamentos?\n\nSome das listas, do realizado do orçamento e das receitas do painel. Os boletos e o orçamento não são apagados.`)) return
+    setTransactions([])
+    showToast('Todos os lançamentos foram apagados.')
+  }
+
   const handleExport = () => {
     const header = 'data;descricao;categoria;tipo;valor;instituicao;conta;desdobramento'
     const lines = transactions.map((transaction) => {
@@ -2929,7 +2973,7 @@ function FinanceApp({ user }) {
 
   const renderView = () => {
     if (activeView === 'dashboard') return <DashboardPage accounts={accounts} transactions={transactions} budgets={budgets} bills={bills} reminders={reminders} userName={userName} onNavigate={navigate} onImportDemo={() => { navigate('import'); handleDemo('Nubank') }} />
-    if (activeView === 'transactions') return <TransactionsPage transactions={transactions} accounts={accounts} search={globalSearch} onSearch={setGlobalSearch} onImport={() => navigate('import')} onExport={handleExport} onIgnore={handleIgnoreTransaction} onSplit={openSplitTransaction} onAdd={() => openTransactionModal()} />
+    if (activeView === 'transactions') return <TransactionsPage transactions={transactions} accounts={accounts} search={globalSearch} onSearch={setGlobalSearch} onImport={() => navigate('import')} onExport={handleExport} onIgnore={handleIgnoreTransaction} onSplit={openSplitTransaction} onAdd={() => openTransactionModal()} onDelete={handleDeleteTransactions} onDeleteAll={handleDeleteAllTransactions} />
     if (activeView === 'import') return <ImportPage accounts={accounts} form={importForm} onFormChange={(patch) => patch.institution ? handleInstitutionChange(patch.institution) : setImportForm((current) => ({ ...current, ...patch }))} file={importFile} onFile={handleFile} status={importStatus} rows={importRows} warning={importWarning} password={importPassword} onPasswordChange={setImportPassword} requiresPassword={importRequiresPassword} onParse={handleParse} onDemo={handleDemo} onReset={resetImport} onUpdateRow={handleUpdateRow} onSplit={openSplitReview} onConfirm={handleConfirmImport} onNavigate={navigate} reconciliation={importReconciliation} outlook={{
     configured: isOutlookConfigured(),
     account: outlookAccount,
