@@ -306,6 +306,61 @@ function guessCategoryFromDescription(value) {
   return 'Outros'
 }
 
+// Transações de cofrinho/caixinha vão de uma conta para outra. O extrato
+// escreve "No cofrinho X" para entrar na conta X e "Do cofrinho X" para sair,
+// então é isso que decide de que lado o saldo anda.
+function findNamedCounterparty(description, accounts, excludeId) {
+  const text = normalizeText(description)
+  if (!text) return null
+
+  for (const account of accounts) {
+    if (account.id === excludeId) continue
+    const key = normalizeText(account.name)
+    if (!key || key.length < 4) continue
+    const index = text.indexOf(key)
+    if (index === -1) continue
+
+    const before = text.slice(Math.max(0, index - 40), index)
+    if (before.includes('nocofrinho') || before.includes('nacaixinha')) return { account, incoming: true }
+    if (before.includes('docofrinho') || before.includes('docaixinha')) return { account, incoming: false }
+    return null
+  }
+
+  return null
+}
+
+// Depois de importar, o saldo da conta passa a vir do extrato, e as
+// transferências de cofrinho mexem nas duas contas envolvidas.
+function applyImportToAccounts(accounts, { accountId, transactions, statementBalance }) {
+  const touched = new Map()
+
+  for (const transaction of transactions) {
+    if (transaction.accountId !== accountId) continue
+
+    if (transaction.type === 'income') {
+      touched.set(accountId, (touched.get(accountId) ?? 0) + Number(transaction.amount || 0))
+      continue
+    }
+
+    if (transaction.type === 'expense') {
+      touched.set(accountId, (touched.get(accountId) ?? 0) - Number(transaction.amount || 0))
+      continue
+    }
+
+    const counterparty = findNamedCounterparty(transaction.description, accounts, accountId)
+    if (!counterparty) continue
+    const amount = Number(transaction.amount || 0)
+    touched.set(accountId, (touched.get(accountId) ?? 0) + (counterparty.incoming ? amount : -amount))
+    touched.set(counterparty.account.id, (touched.get(counterparty.account.id) ?? 0) + (counterparty.incoming ? -amount : amount))
+  }
+
+  return accounts.map((account) => {
+    const delta = touched.get(account.id)
+    if (!delta) return account
+    return { ...account, balance: Math.round((Number(account.balance || 0) + delta) * 100) / 100, lastUpdated: 'Agora' }
+  })
+}
+
 function adjustBalancesForTransaction(accounts, transaction, direction = 1) {
   const destinationId = transaction.destinationAccountId ?? null
   return accounts.map((item) => {
@@ -2212,6 +2267,7 @@ function FinanceApp({ user }) {
   const [importPassword, setImportPassword] = useState('')
   const [importRequiresPassword, setImportRequiresPassword] = useState(false)
   const [importReconciliation, setImportReconciliation] = useState(null)
+  const [importBalance, setImportBalance] = useState(null)
   const [cloudStatus, setCloudStatus] = useState('sincronizando')
   const [bellOpen, setBellOpen] = useState(false)
   const [alertSettings, setAlertSettings] = useState({ email: '', enabled: false, days_before: 1 })
@@ -2417,6 +2473,7 @@ function FinanceApp({ user }) {
       setImportRows(reviewedRows)
       setImportWarning(result.warnings[0] || '')
       setImportReconciliation(result.reconciliation ?? null)
+      setImportBalance(result.statementBalance ?? null)
       setImportPassword('')
       setImportRequiresPassword(false)
       setImportStatus('review')
@@ -2672,6 +2729,7 @@ function FinanceApp({ user }) {
       setImportRows(reviewedRows)
       setImportWarning(result.warnings[0] || '')
       setImportReconciliation(result.reconciliation ?? null)
+      setImportBalance(result.statementBalance ?? null)
       setImportPassword('')
       setImportRequiresPassword(false)
       setImportStatus('review')
@@ -2700,6 +2758,7 @@ function FinanceApp({ user }) {
   const handleConfirmImport = () => {
     const ready = importRows.filter((row) => row.status !== 'duplicate' && row.status !== 'ignored')
     if (!ready.length) return
+    const statementBalance = importBalance
     const newTransactions = ready.map((row) => ({
       id: row.id,
       date: row.date,
@@ -2727,11 +2786,24 @@ function FinanceApp({ user }) {
 
     setTransactions((current) => [...withLink, ...current])
     setBills(reconciliation.bills)
+
+    const targetAccountId = ready[0]?.accountId ?? importForm.accountId
+    setAccounts((current) => {
+      const moved = applyImportToAccounts(current, { accountId: targetAccountId, transactions: withLink })
+      // O extrato é a fonte do saldo: o valor impresso pelo banco substitui o
+      // digitado, e fica com a data de referência do período.
+      const closing = statementBalance?.closing
+      if (closing === null || closing === undefined) return moved
+      return moved.map((account) => (account.id === targetAccountId
+        ? { ...account, balance: closing, lastUpdated: 'Extrato', balanceAsOf: statementBalance.periodEnd || '' }
+        : account))
+    })
+
     setImportStatus('success')
     showToast(`${newTransactions.length} lançamentos importados${reconciliation.matches.length ? ` · ${reconciliation.matches.length} boleto(s) conciliados` : ''}.`)
   }
 
-  const resetImport = () => { setImportFile(null); setImportStatus('idle'); setImportRows([]); setImportWarning(''); setImportPassword(''); setImportRequiresPassword(false); setImportReconciliation(null) }
+  const resetImport = () => { setImportFile(null); setImportStatus('idle'); setImportRows([]); setImportWarning(''); setImportPassword(''); setImportRequiresPassword(false); setImportReconciliation(null); setImportBalance(null) }
 
   const handleAddAccount = (form) => {
     const id = `acc-${form.institution.toLowerCase()}-${Date.now()}`

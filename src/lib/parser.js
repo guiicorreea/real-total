@@ -744,6 +744,46 @@ function extractNubankRows(pages) {
   return rows
 }
 
+// Bradesco só dá o saldo linha a linha. PicPay e Nubank imprimem o saldo
+// inicial e o final do período num bloco de resumo. Serve para conferir a
+// leitura e para manter o saldo da conta em dia.
+const STATEMENT_MONEY_PATTERN = /^[+\-−–—]?\s*(R\$\s*)?\d{1,3}(\.\d{3})*,\d{2}$/
+const STATEMENT_OPENING_LABEL = /saldo inicial/i
+const STATEMENT_CLOSING_LABEL = /saldo final do per/i
+
+function extractStatementBalances(pages, allText) {
+  let opening = null
+  let closing = null
+
+  for (const cells of pages) {
+    const lines = groupCellsIntoLines(cells)
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const label = lines[index].cells.find((cell) => STATEMENT_OPENING_LABEL.test(cell.str) || STATEMENT_CLOSING_LABEL.test(cell.str))
+      if (!label) continue
+
+      // No PicPay o rótulo e o valor caem em linhas diferentes, com a
+      // data do período no meio. Procura na linha e na seguinte.
+      const money = [lines[index], lines[index + 1] ?? { cells: [] }]
+        .flatMap((line) => line.cells)
+        .find((cell) => cell !== label && STATEMENT_MONEY_PATTERN.test(cell.str.trim()))
+      if (!money) continue
+
+      if (STATEMENT_OPENING_LABEL.test(label.str) && opening === null) opening = parseAmount(money.str)
+      // O rótulo aparece duas vezes no resumo do Nubank: no cabeçalho da
+      // seção e na linha final. O último é o saldo do período.
+      if (STATEMENT_CLOSING_LABEL.test(label.str)) closing = parseAmount(money.str)
+    }
+  }
+
+  // "Extrato de conta 10 de setembro de 2026 a 9 de outubro de 2026"
+  // "01 DE OUTUBRO DE 2026 09 DE OUTUBRO DE 2026"
+  const period = allText.match(/(\d{1,2})\s+de\s+([a-zçãáéíóúâêôç]+)\s+de\s+(\d{4})\s+(?:a\s+)?(\d{1,2})\s+de\s+([a-zçãáéíóúâêôç]+)\s+de\s+(\d{4})/i)
+  const periodEnd = period ? picpayDayToIso(`${period[4]} de ${period[5]} de ${period[6]}`) : ''
+
+  return { opening, closing, periodEnd }
+}
+
 async function parsePdf(file, password = '') {
   try {
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
@@ -790,10 +830,15 @@ async function parsePdf(file, password = '') {
       }
     }
 
+    const balances = extractStatementBalances(pageCells, pages.join('\n'))
+    if (balances.closing === null) balances.closing = extracted.reconciliation?.closingBalance ?? null
+    if (balances.opening === null) balances.opening = extracted.reconciliation?.openingBalance ?? null
+
     return {
       rows,
       requiresPassword: false,
       reconciliation: extracted.reconciliation,
+      statementBalance: balances,
       warnings: rows.length ? [] : ['O PDF foi carregado, mas não encontramos linhas tabulares. Tente CSV/XLSX para uma leitura mais precisa.'],
     }
   } catch (error) {
@@ -828,6 +873,7 @@ export async function parseStatement(file, institution, accountId, options = {})
     warnings: result.warnings,
     requiresPassword: Boolean(result.requiresPassword),
     reconciliation: result.reconciliation ?? null,
+    statementBalance: result.statementBalance ?? null,
   }
 }
 
