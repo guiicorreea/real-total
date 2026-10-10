@@ -2238,20 +2238,25 @@ function FinanceApp({ user }) {
     const timer = window.setTimeout(() => setToast(null), 4200)
     return () => window.clearTimeout(timer)
   }, [toast])
+  // A sessão do Outlook é restaurada uma vez, ao abrir o app. Antes isso só
+  // rodava na tela de Boletos, e quem entrava direto em Importar extrato via
+  // "Conectar Outlook" mesmo já estando conectado.
+  const outlookRestoreDone = useRef(false)
   useEffect(() => {
-    if (activeView !== 'bills' || !isOutlookConfigured()) return
+    if (!isOutlookConfigured() || outlookRestoreDone.current) return
+    outlookRestoreDone.current = true
     initializeOutlook().then((account) => {
       if (!account) return
       setOutlookAccount(account)
       setOutlookStatus('connected')
-      setOutlookMessage('Conta conectada. Sincronize para buscar seus boletos.')
+      setOutlookMessage('Conta conectada. Sincronize para buscar boletos e extratos.')
     }).catch((error) => {
       if (error?.message) {
         setOutlookStatus('error')
         setOutlookMessage(error.message)
       }
     })
-  }, [activeView])
+  }, [])
   useEffect(() => {
     const matching = accounts.find((account) => account.institution === importForm.institution)
     if (matching && !accounts.some((account) => account.id === importForm.accountId)) setImportForm((current) => ({ ...current, accountId: matching.id }))
