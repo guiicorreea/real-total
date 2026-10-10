@@ -364,6 +364,151 @@ function parsePdfText(text) {
 // tesseract. Só cai neste caminho quando o texto extraído não gerou linhas.
 const OCR_STATEMENT_MAX_PAGES = 3
 
+// Extrato bancário em PDF chega como tabela, com data, histórico, documento,
+// crédito, débito e saldo. O texto puro perde as colunas: sem elas não dá para
+// saber que 1.244,03 é débito e 44,36 é o saldo, e o não se distingue de
+// crédito. Por isso a leitura usa a posição de cada trecho na página.
+//
+// Valores numéricos são alinhados à direita, então casam pela borda direita.
+// Data e histórico são alinhados à esquerda, então casam pela borda esquerda.
+
+const TABLE_LINE_TOLERANCE = 12
+const TABLE_DATE_PATTERN = /^\d{1,2}\/\d{1,2}\/\d{2,4}$/
+const TABLE_MONEY_PATTERN = /^-?\d{1,3}(\.\d{3})*,\d{2}$/
+const TABLE_NUMBER_PATTERN = /^-?\d[\d.]*(,\d+)?$/
+const TABLE_COLUMN_TOLERANCE = 30
+
+function groupCellsIntoLines(cells) {
+  const sorted = [...cells].sort((a, b) => b.y - a.y || a.x - b.x)
+  const lines = []
+
+  for (const cell of sorted) {
+    const line = lines.find((item) => Math.abs(item.y - cell.y) <= TABLE_LINE_TOLERANCE)
+    if (line) line.cells.push(cell)
+    else lines.push({ y: cell.y, cells: [cell] })
+  }
+
+  return lines.map((line) => ({ y: line.y, cells: line.cells.sort((a, b) => a.x - b.x) }))
+}
+
+function findHeaderCell(cells, pattern) {
+  return cells.find((cell) => pattern.test(cell.str.trim())) ?? null
+}
+
+function detectTableColumns(cells) {
+  const date = findHeaderCell(cells, /^data$/i)
+  const credit = findHeaderCell(cells, /cr[eé]dito/i)
+  const debit = findHeaderCell(cells, /d[eé]bito/i)
+  const balance = findHeaderCell(cells, /saldo/i)
+
+  // Sem crédito e sem débito não há como montar a linha de movimentação.
+  if (!date || (!credit && !debit)) return null
+
+  const document_ = findHeaderCell(cells, /docto|documento/i)
+  // Documento também é numérico, então entra na lista de colunas que casam
+  // pela borda direita. Sem isso o número do documento vira parte da descrição.
+  const numbers = [
+    document_ && { key: 'document', right: document_.x + document_.width },
+    credit && { key: 'credit', right: credit.x + credit.width },
+    debit && { key: 'debit', right: debit.x + debit.width },
+    balance && { key: 'balance', right: balance.x + balance.width },
+  ].filter(Boolean)
+
+  return {
+    descriptionStart: date.x + date.width,
+    descriptionEnd: (document_ ?? credit ?? debit).x,
+    money: numbers,
+  }
+}
+
+function moneyColumnFor(cell, money) {
+  const right = cell.x + cell.width
+  let best = null
+  let bestDelta = Infinity
+
+  for (const column of money) {
+    const delta = Math.abs(right - column.right)
+    if (delta < bestDelta) {
+      bestDelta = delta
+      best = column
+    }
+  }
+
+  return bestDelta <= TABLE_COLUMN_TOLERANCE ? best : null
+}
+
+function firstMoneyIn(cells, key) {
+  const cell = cells.find((item) => item.key === key && TABLE_MONEY_PATTERN.test(item.str.trim()))
+  return cell ? cell.str.trim() : null
+}
+
+function rowsFromLine(line, columns) {
+  const text = line.cells.map((cell) => cell.str).join(' ').replace(/\s+/g, ' ').trim()
+  if (!text || /^total\b/i.test(text)) return { skipped: true }
+
+  const classified = line.cells.map((cell) => {
+    const value = cell.str.trim()
+    if (TABLE_DATE_PATTERN.test(value)) return { key: 'date', str: value }
+    if (TABLE_NUMBER_PATTERN.test(value) && /\d/.test(value)) {
+      const column = moneyColumnFor(cell, columns.money)
+      return { key: column ? column.key : null, str: value }
+    }
+    return {
+      key: cell.x > columns.descriptionStart && cell.x < columns.descriptionEnd ? 'description' : 'other',
+      str: value,
+    }
+  })
+
+  const date = classified.find((cell) => cell.key === 'date')?.str ?? null
+  const rawDescription = classified
+    .filter((cell) => cell.key === 'description')
+    .map((cell) => cell.str)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  // Bradesco suffixa no histórico a data da operação, que repete a coluna.
+  const description = rawDescription.replace(/\s+\d{2}\/\d{2}$/, '').trim() || rawDescription
+
+  const credit = firstMoneyIn(classified, 'credit')
+  const debit = firstMoneyIn(classified, 'debit')
+
+  // Bradesco imprime crédito e débito em colunas separadas, sempre com sinal
+  // positivo. O app usa sinal negativo para despesa, então o débito vira
+  // negativo e o crédito continua positivo.
+  const amount = debit ? `-${debit.replace(/^-/, '')}` : credit
+  if (!amount) return { skipped: true }
+  if (Math.abs(parseAmount(amount)) < 0.005) return { skipped: true }
+
+  return { date, description, amount, skipped: false }
+}
+
+function extractTableRows(pages) {
+  const rows = []
+
+  for (const cells of pages) {
+    const lines = groupCellsIntoLines(cells)
+    const headerIndex = lines.findIndex((line) => detectTableColumns(line.cells))
+    if (headerIndex === -1) continue
+
+    const columns = detectTableColumns(lines[headerIndex].cells)
+    let currentDate = ''
+
+    for (const line of lines.slice(headerIndex + 1)) {
+      const parsed = rowsFromLine(line, columns)
+      if (parsed.skipped) continue
+
+      // O banco repete a data só quando ela muda; linha sem data herda a anterior.
+      if (parsed.date) currentDate = parsed.date
+      if (!currentDate) continue
+
+      rows.push({ date: currentDate, description: parsed.description, amount: parsed.amount })
+    }
+  }
+
+  return rows
+}
+
 async function parsePdf(file, password = '') {
   try {
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
@@ -371,14 +516,25 @@ async function parsePdf(file, password = '') {
     const data = new Uint8Array(await file.arrayBuffer())
     const document = await pdfjs.getDocument({ data, ...(password ? { password } : {}) }).promise
     const pages = []
+    const pageCells = []
 
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
       const page = await document.getPage(pageNumber)
       const content = await page.getTextContent()
-      pages.push(content.items.map((item) => item.str).join(' '))
+      const cells = content.items
+        .map((item) => ({
+          str: item.str ?? '',
+          x: item.transform?.[4] ?? 0,
+          y: item.transform?.[5] ?? 0,
+          width: item.width ?? 0,
+        }))
+        .filter((cell) => cell.str.trim() !== '')
+      pageCells.push(cells)
+      pages.push(cells.map((cell) => cell.str).join(' '))
     }
 
-    let rows = parsePdfText(pages.join('\n'))
+    let rows = extractTableRows(pageCells)
+    if (!rows.length) rows = parsePdfText(pages.join('\n'))
 
     if (!rows.length) {
       const limit = Math.min(document.numPages, OCR_STATEMENT_MAX_PAGES)
