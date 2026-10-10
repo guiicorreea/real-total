@@ -559,6 +559,87 @@ function extractTableRows(pages) {
   return { rows, reconciliation: buildReconciliation(rows, openingLine, closingLine) }
 }
 
+// PicPay não imprime tabela. A data vem num cabeçalho de dia, seguido de uma
+// linha de legendas, e cada movimentação começa pela hora:
+//
+//   08 de outubro 2026   Saldo ao final do dia: R$ 161,83
+//   Hora   Tipo   Origem / Destino   Valor
+//   19:05  Pix enviado  Luis Amazonio  −R$ 300,00
+//
+// As colunas saem da posição de cada trecho na página, e a data vigente é a do
+// último cabeçalho de dia visto. O dia vem sem o segundo "de", diferente do
+// período impresso no topo do extrato.
+
+// Aceita o sinal de mais e o menos tipográfico: o PicPay usa os dois.
+const PICPAY_MONEY_PATTERN = /^[+\-−–—]?\s*R?\$\s*[+\-−–—]?\s*\d{1,3}(\.\d{3})*,\d{2}$/
+const PICPAY_DAY_PATTERN = /^(\d{1,2})\s+de\s+([a-zçãáéíóúâêôç]+)\s+(?:de\s+)?(\d{4})$/i
+const PICPAY_TIME_PATTERN = /^\d{1,2}:\d{2}$/
+
+// Reaproveita o mapa de meses por extenso que já existe no arquivo.
+function picpayDayToIso(text) {
+  const match = text.trim().match(PICPAY_DAY_PATTERN)
+  if (!match) return ''
+  const month = monthNumberByName[normalizeText(match[2])]
+  if (!month) return ''
+  return `${match[3]}-${String(month).padStart(2, '0')}-${match[1].padStart(2, '0')}`
+}
+
+function extractDailyRows(pages) {
+  const rows = []
+
+  for (const cells of pages) {
+    const lines = groupCellsIntoLines(cells)
+    let currentDate = ''
+    // Bordas de coluna, sobrescritas pela linha de legendas quando ela existe.
+    let bounds = { tipo: 110, origem: 230, forma: 340 }
+
+    for (const line of lines) {
+      const day = line.cells.map((cell) => cell.str.trim()).find((text) => PICPAY_DAY_PATTERN.test(text))
+      if (day) {
+        currentDate = picpayDayToIso(day)
+        continue
+      }
+
+      const legendTipo = line.cells.find((cell) => /^tipo$/i.test(cell.str.trim()))
+      if (legendTipo) {
+        const legendOrigem = line.cells.find((cell) => /origem\s*\/\s*destino/i.test(cell.str.trim()))
+        const legendForma = line.cells.find((cell) => /forma de pagamento/i.test(cell.str.trim()))
+        if (legendOrigem) {
+          bounds = {
+            tipo: legendTipo.x - 10,
+            origem: legendOrigem.x - 10,
+            forma: legendForma ? legendForma.x - 10 : 340,
+          }
+        }
+        continue
+      }
+
+      if (!currentDate) continue
+      if (!line.cells.some((cell) => PICPAY_TIME_PATTERN.test(cell.str.trim()))) continue
+
+      const money = line.cells.find((cell) => PICPAY_MONEY_PATTERN.test(cell.str.trim()))
+      if (!money) continue
+
+      const type = line.cells
+        .filter((cell) => cell.x >= bounds.tipo && cell.x < bounds.origem)
+        .map((cell) => cell.str.trim())
+        .join(' ')
+      const origin = line.cells
+        .filter((cell) => cell.x >= bounds.origem && cell.x < bounds.forma)
+        .map((cell) => cell.str.trim())
+        .join(' ')
+
+      rows.push({
+        date: currentDate,
+        description: [type, origin].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim(),
+        amount: money.str.trim(),
+      })
+    }
+  }
+
+  return rows
+}
+
 async function parsePdf(file, password = '') {
   try {
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
@@ -585,6 +666,8 @@ async function parsePdf(file, password = '') {
 
     let extracted = extractTableRows(pageCells)
     let rows = extracted.rows
+    // Extrato do PicPay tem outro formato, sem tabela.
+    if (!rows.length) rows = extractDailyRows(pageCells)
     if (!rows.length) rows = parsePdfText(pages.join('\n'))
 
     if (!rows.length) {
