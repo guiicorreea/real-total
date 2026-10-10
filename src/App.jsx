@@ -1679,12 +1679,13 @@ function SplitTransactionModal({ open, item, onClose, onSave, onUpdatePlanned, b
 
   const fillFromBudget = () => setAllocations((current) => {
     const rows = seedWithinTotal(current.map((allocation) => [allocation.category, plannedByCategory[allocation.category] ?? allocation.amount]), total)
-    const byCategory = Object.fromEntries(rows.map((row) => [row.key, row.amount]))
+    const byCategory = Object.fromEntries(rows)
     return current.map((allocation) => ({ ...allocation, amount: byCategory[allocation.category] ?? allocation.amount }))
   })
 
   // Traz o orçado como sugestão sem nunca passar do valor da transação. Antes
   // despejava o mês inteiro, e a diferença virava uma linha negativa.
+  // Devolve pares [chave, valor], que é o formato que os consumidores usam.
   function seedWithinTotal(entries, totalValue) {
     const rows = []
     let sum = 0
@@ -1692,7 +1693,7 @@ function SplitTransactionModal({ open, item, onClose, onSave, onUpdatePlanned, b
     for (const [key, amount] of entries) {
       if (amount <= 0 || sum >= totalValue) continue
       const room = Math.min(amount, totalValue - sum)
-      rows.push({ key, amount: Math.round(room * 100) / 100 })
+      rows.push([key, Math.round(room * 100) / 100])
       sum += room
     }
 
@@ -1701,13 +1702,13 @@ function SplitTransactionModal({ open, item, onClose, onSave, onUpdatePlanned, b
 
   const applyPlannedItems = () => {
     const rows = seedWithinTotal(plannedItems.map((budget) => [budget.id, budget.amount]), total)
-    setAllocations(rows.map((row, index) => {
-      const budget = byId[row.key]
+    setAllocations(rows.map(([budgetId, amount], index) => {
+      const budget = byId[budgetId]
       return {
         id: `allocation-${Date.now()}-${index}`,
         budgetItemId: budget.id,
         category: budget.category,
-        amount: row.amount,
+        amount,
       }
     }))
   }
