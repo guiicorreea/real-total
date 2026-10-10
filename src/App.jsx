@@ -961,7 +961,67 @@ function ReconciliationPanel({ reconciliation }) {
   )
 }
 
-function ImportPage({ accounts, form, onFormChange, file, onFile, status, rows, warning, password, onPasswordChange, requiresPassword, onParse, onDemo, onReset, onUpdateRow, onSplit, onConfirm, onNavigate, reconciliation }) {
+function OutlookImportCard({ configured, account, status, message, candidates, busy, onConnect, onSync, onOpen, onProcess }) {
+  const [passwords, setPasswords] = useState({})
+  if (!configured) return null
+
+  const busyNow = status === 'syncing' || status === 'connecting'
+
+  return (
+    <section className="panel outlook-import-card">
+      <div className="outlook-import-card__icon"><Mail size={20} /></div>
+      <div className="outlook-import-card__copy">
+        <h2>Buscar extrato no Outlook</h2>
+        <p>Os PDFs de extrato que chegaram no seu e-mail aparecem aqui, prontos para importar.</p>
+      </div>
+
+      {!account ? (
+        <button className="button button--soft" onClick={onConnect} disabled={busyNow}>
+          {busyNow ? <><Loader2 className="spin" size={15} /> Conectando...</> : <><Link2 size={15} /> Conectar Outlook</>}
+        </button>
+      ) : (
+        <button className="button button--soft" onClick={onSync} disabled={busyNow}>
+          {busyNow ? <><Loader2 className="spin" size={15} /> Lendo...</> : <><RefreshCw size={15} /> Buscar no e-mail</>}
+        </button>
+      )}
+
+      {status === 'error' && <span className="outlook-error">{message}</span>}
+      {account && !candidates.length && <span className="outlook-import-card__note">{message || 'Nenhum PDF de extrato encontrado. Rode a busca novamente se acabara de receber.'}</span>}
+
+      {candidates.length > 0 && (
+        <div className="outlook-import-list">
+          {candidates.map((candidate) => {
+            const password = passwords[candidate.id] ?? ''
+            const working = busy === candidate.id
+
+            return (
+              <div className="outlook-import-item" key={candidate.id}>
+                <span className="outlook-import-item__icon"><FileText size={16} /></span>
+                <div className="outlook-import-item__text">
+                  <strong>{candidate.subject}</strong>
+                  <span>{candidate.sender} · {formatDate(candidate.receivedAt)}</span>
+                </div>
+
+                {candidate.requiresPassword ? (
+                  <div className="candidate-password">
+                    <input type="password" value={password} onChange={(event) => setPasswords((current) => ({ ...current, [candidate.id]: event.target.value }))} placeholder="Senha do PDF" />
+                    <button className="button button--soft" onClick={() => onProcess(candidate, password)} disabled={working || !password}>{working ? <Loader2 className="spin" size={14} /> : <Check size={14} />} Processar</button>
+                  </div>
+                ) : (
+                  <button className="button button--soft" onClick={() => onOpen(candidate)} disabled={working}>
+                    <Upload size={14} /> Importar
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function ImportPage({ accounts, form, onFormChange, file, onFile, status, rows, warning, password, onPasswordChange, requiresPassword, onParse, onDemo, onReset, onUpdateRow, onSplit, onConfirm, onNavigate, reconciliation, outlook }) {
   const inputRef = useRef(null)
   const [dragging, setDragging] = useState(false)
   const availableAccounts = accounts.filter((account) => account.institution === form.institution)
@@ -996,7 +1056,9 @@ function ImportPage({ accounts, form, onFormChange, file, onFile, status, rows, 
       <div className="stepper"><Step number="1" label="Selecionar arquivo" active={status === 'idle' || status === 'parsing' || status === 'error'} done={status === 'review'} /><span /><Step number="2" label="Revisar lançamentos" active={status === 'review'} done={false} /><span /><Step number="3" label="Concluir" active={false} done={status === 'success'} /></div>
 
       {status !== 'review' ? (
-        <section className="import-layout">
+        <>
+          {outlook && status !== 'parsing' && <OutlookImportCard {...outlook} />}
+          <section className="import-layout">
           <article className="panel import-card">
             <div className="import-card__heading"><div className="import-card__heading-icon"><Upload size={20} /></div><div><h2>Envie seu extrato</h2><p>Suportamos PDF, CSV e XLSX de até 10 MB.</p></div></div>
             <div className="form-grid form-grid--two">
@@ -1030,7 +1092,8 @@ function ImportPage({ accounts, form, onFormChange, file, onFile, status, rows, 
             </div>
             <div className="demo-panel__footer"><Info size={15} /> Depois será possível conectar seu banco com segurança.</div>
           </aside>
-        </section>
+          </section>
+        </>
       ) : (
         <section className="review-section">
           <div className="review-toolbar"><div><span className="eyebrow">Passo 2 de 3</span><h2>Revise os lançamentos</h2><p>Confira as sugestões antes de salvar. Você pode editar qualquer categoria.</p></div><button className="button button--ghost" onClick={onReset}><RefreshCw size={15} /> Trocar arquivo</button></div>
@@ -2771,7 +2834,18 @@ function FinanceApp({ user }) {
   const renderView = () => {
     if (activeView === 'dashboard') return <DashboardPage accounts={accounts} transactions={transactions} budgets={budgets} bills={bills} reminders={reminders} userName={userName} onNavigate={navigate} onImportDemo={() => { navigate('import'); handleDemo('Nubank') }} />
     if (activeView === 'transactions') return <TransactionsPage transactions={transactions} accounts={accounts} search={globalSearch} onSearch={setGlobalSearch} onImport={() => navigate('import')} onExport={handleExport} onIgnore={handleIgnoreTransaction} onSplit={openSplitTransaction} onAdd={() => openTransactionModal()} />
-    if (activeView === 'import') return <ImportPage accounts={accounts} form={importForm} onFormChange={(patch) => patch.institution ? handleInstitutionChange(patch.institution) : setImportForm((current) => ({ ...current, ...patch }))} file={importFile} onFile={handleFile} status={importStatus} rows={importRows} warning={importWarning} password={importPassword} onPasswordChange={setImportPassword} requiresPassword={importRequiresPassword} onParse={handleParse} onDemo={handleDemo} onReset={resetImport} onUpdateRow={handleUpdateRow} onSplit={openSplitReview} onConfirm={handleConfirmImport} onNavigate={navigate} reconciliation={importReconciliation} />
+    if (activeView === 'import') return <ImportPage accounts={accounts} form={importForm} onFormChange={(patch) => patch.institution ? handleInstitutionChange(patch.institution) : setImportForm((current) => ({ ...current, ...patch }))} file={importFile} onFile={handleFile} status={importStatus} rows={importRows} warning={importWarning} password={importPassword} onPasswordChange={setImportPassword} requiresPassword={importRequiresPassword} onParse={handleParse} onDemo={handleDemo} onReset={resetImport} onUpdateRow={handleUpdateRow} onSplit={openSplitReview} onConfirm={handleConfirmImport} onNavigate={navigate} reconciliation={importReconciliation} outlook={{
+    configured: isOutlookConfigured(),
+    account: outlookAccount,
+    status: outlookStatus,
+    message: outlookMessage,
+    candidates: outlookCandidates.filter((candidate) => candidate.documentType === 'statement' && !candidate.fileMissing),
+    busy: candidateBusy,
+    onConnect: handleConnectOutlook,
+    onSync: handleSyncOutlook,
+    onOpen: (candidate) => { setStatementCandidate(candidate); setStatementModalOpen(true) },
+    onProcess: handleProcessCandidate,
+  }} />
     if (activeView === 'bills') return <BillsPage bills={bills} candidates={outlookCandidates} transactions={transactions} accounts={accounts} outlookAccount={outlookAccount} outlookStatus={outlookStatus} outlookMessage={outlookMessage} configured={isOutlookConfigured()} candidatePasswords={candidatePasswords} candidateBusy={candidateBusy} duplicateCount={duplicateBills.length + orphanDuplicateBudgets.length} onRemoveDuplicates={handleRemoveDuplicates} onConnect={handleConnectOutlook} onDisconnect={handleDisconnectOutlook} onSync={handleSyncOutlook} onAdd={() => openBillModal()} onEdit={openBillModal} onDelete={handleDeleteBill} onMatch={setBillMatchId} onLaunch={openTransactionModal} onReopen={handleReopenBill} onSaveAll={handleSaveAllCandidates} onDiscardAll={handleDiscardAllCandidates} onProcessCandidate={handleProcessCandidate} onCandidatePasswordChange={(id, value) => setCandidatePasswords((current) => ({ ...current, [id]: value }))} onReviewCandidate={(candidate) => openBillModal({ ...candidate, source: 'outlook', sender: candidate.sender, receivedAt: candidate.receivedAt })} onReviewManualBill={(bill) => openBillModal(bill)} onDiscardCandidate={handleDiscardCandidate} onImportStatement={(candidate) => { setStatementCandidate(candidate); setStatementModalOpen(true) }} />
     if (activeView === 'accounts') return <AccountsPage accounts={accounts} transactions={transactions} onAdd={() => { setEditingAccount(null); setAccountModalOpen(true) }} onEdit={(account) => { setEditingAccount(account); setAccountModalOpen(true) }} onImport={() => navigate('import')} />
     if (activeView === 'budgets') return <BudgetsPage budgets={budgets} groups={budgetGroups} income={budgetIncome} transactions={transactions} accounts={accounts} bills={bills} onAdd={openBudgetModal} onEdit={openBudgetModal} onDelete={handleDeleteBudget} onUpdateGroup={handleUpdateGroup} onIncomeChange={handleIncomeChange} onOpenCopy={openCopyBudgetModal} />
