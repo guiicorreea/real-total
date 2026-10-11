@@ -81,6 +81,7 @@ const navItems = [
   { id: 'bills', label: 'Boletos', icon: Mail },
   { id: 'accounts', label: 'Contas', icon: Wallet },
   { id: 'budgets', label: 'Orçamentos', icon: PiggyBank },
+  { id: 'insights', label: 'Insights', icon: Sparkles },
   { id: 'simulate', label: 'Simular', icon: SlidersHorizontal },
   { id: 'goals', label: 'Metas', icon: Target, soon: true },
 ]
@@ -92,6 +93,7 @@ const viewTitles = {
   bills: 'Boletos',
   accounts: 'Contas',
   budgets: 'Orçamentos',
+  insights: 'Insights',
   simulate: 'Simulação',
   goals: 'Metas',
   settings: 'Configurações',
@@ -359,6 +361,118 @@ function applyImportToAccounts(accounts, { accountId, transactions, statementBal
     if (!delta) return account
     return { ...account, balance: Math.round((Number(account.balance || 0) + delta) * 100) / 100, lastUpdated: 'Agora' }
   })
+}
+
+// -----------------------------------------------------------------------------
+// Insights: análise das contas do mês, toda calculada a partir dos números.
+// Nada aqui é chute, e nada sai do navegador.
+//
+// O realizado é lido por categoria, e não por item do orçamento. O item só
+// recebe valor quando a conciliação ou o desdobramento diz a quem ele pertence,
+// e usar isso aqui deixaria a análise muda conforme o usuário preencheu.
+
+// Funções puras, para poderem ser testadas fora da tela.
+function categorySpendForMonth(transactions, monthKey) {
+  const totals = {}
+  let expenses = 0
+  let income = 0
+  let yield_ = 0
+  let transfers = 0
+
+  for (const transaction of transactions) {
+    if (!transaction.date?.startsWith(monthKey)) continue
+    if (transaction.type === 'transfer') {
+      transfers += Number(transaction.amount || 0)
+      continue
+    }
+    if (transaction.type === 'income') {
+      if (isYieldTransaction(transaction)) yield_ += Number(transaction.amount || 0)
+      else income += Number(transaction.amount || 0)
+      continue
+    }
+    const allocations = getTransactionAllocations(transaction)
+    const amount = Number(transaction.amount || 0)
+    expenses += amount
+    for (const allocation of allocations) {
+      totals[allocation.category] = (totals[allocation.category] ?? 0) + Number(allocation.amount || 0)
+    }
+  }
+
+  return { totals, expenses, income, yield: yield_, transfers, net: income + yield_ - expenses }
+}
+
+function plannedByCategoryForMonth(budgets, monthKey) {
+  const totals = {}
+  for (const budget of budgets) {
+    const amount = plannedBudgetAmount(budget, monthKey)
+    if (amount > 0) totals[budget.category] = (totals[budget.category] ?? 0) + amount
+  }
+  return totals
+}
+
+function buildInsights({ transactions, budgets, monthKey, previousMonthKey }) {
+  const current = categorySpendForMonth(transactions, monthKey)
+  const previous = previousMonthKey ? categorySpendForMonth(transactions, previousMonthKey) : null
+  const planned = plannedByCategoryForMonth(budgets, monthKey)
+
+  const categories = [...new Set([...Object.keys(current.totals), ...Object.keys(planned)])]
+
+  const overspent = categories
+    .filter((category) => planned[category] > 0 && current.totals[category] > planned[category] + 0.01)
+    .map((category) => ({
+      category,
+      planned: planned[category],
+      actual: current.totals[category],
+      excess: current.totals[category] - planned[category],
+    }))
+    .sort((a, b) => b.excess - a.excess)
+
+  const unplanned = categories
+    .filter((category) => !planned[category] && current.totals[category] > 0.01)
+    .map((category) => ({ category, planned: 0, actual: current.totals[category], excess: current.totals[category] }))
+    .sort((a, b) => b.actual - a.actual)
+
+  const underspent = categories
+    .filter((category) => planned[category] > 0 && current.totals[category] > 0.01 && current.totals[category] <= planned[category])
+    .map((category) => ({ category, planned: planned[category], actual: current.totals[category], left: planned[category] - current.totals[category] }))
+    .sort((a, b) => b.left - a.left)
+
+  const top = Object.entries(current.totals)
+    .filter(([, value]) => value > 0)
+    .map(([category, value]) => ({ category, value, share: current.expenses ? value / current.expenses : 0 }))
+    .sort((a, b) => b.value - a.value)
+
+  const trends = []
+  if (previous) {
+    for (const item of top) {
+      const before = previous.totals[item.category] ?? 0
+      if (before <= 0 && item.value <= 0.01) continue
+      const delta = item.value - before
+      if (Math.abs(delta) < 0.01) continue
+      trends.push({ category: item.category, before, after: item.value, delta, up: delta > 0 })
+    }
+    trends.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+  }
+
+  const totalPlanned = Object.values(planned).reduce((sum, value) => sum + value, 0)
+
+  return {
+    monthKey,
+    summary: {
+      income: current.income,
+      yield: current.yield,
+      expenses: current.expenses,
+      net: current.net,
+      planned: totalPlanned,
+      savingsRate: current.income ? Math.round((current.net / current.income) * 100) : 0,
+      hasComparison: Boolean(previous),
+    },
+    overspent,
+    unplanned,
+    underspent,
+    top,
+    trends,
+  }
 }
 
 function adjustBalancesForTransaction(accounts, transaction, direction = 1) {
@@ -1270,6 +1384,83 @@ function TransactionsPage({ transactions, accounts, search, onSearch, onImport, 
     <div className="page-stack">
       <section className="page-heading"><div><span className="eyebrow">Movimentações consolidadas</span><h1>Transações</h1><p>Consulte, filtre e acompanhe todos os lançamentos das suas contas.</p></div><div className="heading-actions"><button className="button button--soft" onClick={onAdd}><Plus size={16} /> Nova transação</button><button className="button button--ghost" onClick={onExport}><Download size={16} /> Exportar</button><button className="button button--primary" onClick={onImport}><Upload size={16} /> Importar extrato</button></div></section>
       <section className="panel transactions-panel"><div className="filters-row"><div className="search-field search-field--wide"><Search size={16} /><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Buscar por descrição ou instituição" /></div><span className="select-wrap"><Filter size={15} /><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option>Todas</option>{categoryOptions.map((category) => <option key={category}>{category}</option>)}</select><ChevronDown size={14} /></span><span className="select-wrap"><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option>Todos</option><option value="income">Entradas</option><option value="expense">Saídas</option><option value="transfer">Transferências</option></select><ChevronDown size={14} /></span><span className="select-wrap"><select value={accountFilter} onChange={(event) => setAccountFilter(event.target.value)}><option>Todas</option>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select><ChevronDown size={14} /></span></div><div className="table-meta"><span><strong>{filtered.length}</strong> lançamentos encontrados</span><span className="table-meta__hint"><ShieldCheck size={14} /> Dados atualizados agora</span></div>{selection.length > 0 && <div className="bulk-bar"><span><strong>{selection.length}</strong> selecionado{selection.length === 1 ? '' : 's'}</span><button className="text-button" onClick={() => setRawSelection([])}>Limpar seleção</button><button className="button button--soft" onClick={() => onDelete(selection)}><Trash2 size={15} /> Apagar selecionados</button></div>}<div className="table-meta table-meta--bulk"><button type="button" className="text-button" onClick={() => setRawSelection(allSelected ? [] : filtered.map((transaction) => transaction.id))}>{allSelected ? 'Desmarcar todos' : 'Marcar todos os listados'}</button><button type="button" className="text-button text-button--danger" onClick={onDeleteAll} disabled={!transactions.length}>Apagar todos os lançamentos</button></div><TransactionTable transactions={filtered} accounts={accounts} onIgnore={onIgnore} onSplit={onSplit} selected={selection} onToggle={(id) => setRawSelection((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])} /></section>
+    </div>
+  )
+}
+
+function InsightsPage({ transactions, budgets, accounts }) {
+  const [monthKey, setMonthKey] = useState(() => monthKeyFromDate(new Date().toISOString()))
+  const [showAll, setShowAll] = useState(false)
+
+  const availableMonths = useMemo(() => [...new Set(transactions.map((transaction) => monthKeyFromDate(transaction.date)).filter(Boolean))].sort().reverse(), [transactions])
+  const insights = useMemo(() => buildInsights({
+    transactions,
+    budgets,
+    monthKey,
+    previousMonthKey: shiftMonth(monthKey, -1),
+  }), [transactions, budgets, monthKey])
+
+  const reserved = accounts
+    .filter((account) => ['Poupança', 'Investimento'].includes(account.type))
+    .reduce((sum, account) => sum + Number(account.balance || 0), 0)
+
+  const { summary } = insights
+  const lines = []
+  for (const item of insights.overspent.slice(0, 2)) {
+    lines.push(`${item.category} passou ${formatCurrency(item.excess)} do previsto. Cortar esse valor já devolve o mês ao plano.`)
+  }
+  for (const item of insights.unplanned.slice(0, 1)) {
+    lines.push(`${item.category} não está no seu orçamento e consumiu ${formatCurrency(item.actual)}. Incluir no próximo mês evita surpresa.`)
+  }
+  for (const item of insights.underspent.slice(0, 1)) {
+    lines.push(`${item.category} ficou ${formatCurrency(item.left)} abaixo do previsto. Sobrou espaço aqui.`)
+  }
+  if (summary.income > 0 && summary.savingsRate >= 20) {
+    lines.push(`Você guardou ${summary.savingsRate}% da receita deste mês. Dá para acelerar o que está guardado.`)
+  } else if (summary.income > 0 && summary.savingsRate < 0) {
+    lines.push(`O mês fechou no vermelho. As despesas passaram a receita em ${formatCurrency(Math.abs(summary.net))}.`)
+  }
+
+  return (
+    <div className="page-stack">
+      <section className="page-heading">
+        <div><span className="eyebrow">Leitura dos seus números</span><h1>Insights</h1><p>Onde você passou do previsto, onde sobrou e para onde o dinheiro foi. Tudo calculado a partir das suas contas, sem palpite.</p></div>
+        <div className="heading-actions"><span className="select-wrap"><CalendarDays size={15} /><select value={monthKey} onChange={(event) => setMonthKey(event.target.value)}>{availableMonths.map((month) => <option key={month} value={month}>{formatMonthLabel(month)}</option>)}</select><ChevronDown size={14} /></span></div>
+      </section>
+
+      <section className="insights-tiles">
+        <article className="budget-summary-card"><span className="eyebrow">Receita</span><strong>{formatCurrency(summary.income)}</strong><span className="budget-summary-card__hint"><ArrowDownRight size={14} /> sem rendimento</span></article>
+        <article className="budget-summary-card"><span className="eyebrow">Despesa</span><strong>{formatCurrency(summary.expenses)}</strong><span className="budget-summary-card__hint"><TrendingUp size={14} /> previsto {formatCurrency(summary.planned)}</span></article>
+        <article className="budget-summary-card"><span className="eyebrow">Sobra do mês</span><strong className={summary.net < 0 ? 'text-red' : 'text-green'}>{formatCurrency(summary.net)}</strong><span className="budget-summary-card__hint"><PiggyBank size={14} /> {summary.savingsRate}% da receita</span></article>
+        <article className="budget-summary-card"><span className="eyebrow">Guardado e investido</span><strong>{formatCurrency(reserved)}</strong><span className="budget-summary-card__hint"><ShieldCheck size={14} /> fora do disponível</span></article>
+      </section>
+
+      {lines.length > 0 && <section className="panel insights-dicas"><div className="panel-heading"><div><span className="eyebrow">Dicas</span><h2>O que os números indicam</h2></div></div><ul className="insights-dicas__list">{lines.map((line) => <li key={line}><Sparkles size={15} /><span>{line}</span></li>)}</ul></section>}
+
+      <div className="insights-grid">
+        <section className="panel insights-block">
+          <div className="panel-heading"><div><span className="eyebrow">Corte aqui</span><h2>Passou do previsto</h2></div><span className="budgets-panel__note"><TrendingUp size={14} /> {insights.overspent.length} categoria(s)</span></div>
+          {insights.overspent.length ? <ul className="insights-list">{insights.overspent.map((item) => <li key={item.category}><CategoryPill category={item.category} /><span className="insights-list__bar"><i style={{ width: `${Math.min(100, (item.actual / (item.planned || 1)) * 100)}%` }} /></span><strong className="text-red">+{formatCurrency(item.excess)}</strong><small>{formatCurrency(item.actual)} de {formatCurrency(item.planned)}</small></li>)}</ul> : <p className="insights-empty">Nenhuma categoria passou do previsto neste mês.</p>}
+        </section>
+
+        <section className="panel insights-block">
+          <div className="panel-heading"><div><span className="eyebrow">Sem plano</span><h2>Gasto não previsto</h2></div></div>
+          {insights.unplanned.length ? <ul className="insights-list">{insights.unplanned.map((item) => <li key={item.category}><CategoryPill category={item.category} /><span className="insights-list__bar insights-list__bar--muted" /><strong>{formatCurrency(item.actual)}</strong><small>não está no orçamento</small></li>)}</ul> : <p className="insights-empty">Tudo o que você gastou está com categoria no orçamento.</p>}
+        </section>
+
+        <section className="panel insights-block">
+          <div className="panel-heading"><div><span className="eyebrow">Sobrou espaço</span><h2>Abaixo do previsto</h2></div></div>
+          {insights.underspent.length ? <ul className="insights-list">{insights.underspent.map((item) => <li key={item.category}><CategoryPill category={item.category} /><span className="insights-list__bar insights-list__bar--ok" /><strong className="text-green">{formatCurrency(item.left)}</strong><small>{formatCurrency(item.actual)} de {formatCurrency(item.planned)}</small></li>)}</ul> : <p className="insights-empty">Nenhuma categoria ficou abaixo do previsto.</p>}
+        </section>
+
+        <section className="panel insights-block">
+          <div className="panel-heading"><div><span className="eyebrow">Para onde foi</span><h2>Maiores gastos</h2></div></div>
+          {insights.top.length ? <ul className="insights-list">{insights.top.slice(0, showAll ? 12 : 5).map((item) => <li key={item.category}><CategoryPill category={item.category} /><span className="insights-list__bar insights-list__bar--muted"><i style={{ width: `${item.share * 100}%` }} /></span><strong>{formatCurrency(item.value)}</strong><small>{Math.round(item.share * 100)}% das despesas</small></li>)}</ul> : <p className="insights-empty">Sem despesas neste mês.</p>}
+          {insights.top.length > 5 && <button className="text-button insights-more" onClick={() => setShowAll((value) => !value)}>{showAll ? 'Mostrar menos' : 'Mostrar todas'}</button>}
+        </section>
+      </div>
+
+      {insights.trends.length > 0 && <section className="panel insights-block insights-trends"><div className="panel-heading"><div><span className="eyebrow">Comparado a {formatMonthLabel(shiftMonth(monthKey, -1))}</span><h2>O que mudou</h2></div></div><ul className="insights-list">{insights.trends.slice(0, 6).map((item) => <li key={item.category}><CategoryPill category={item.category} /><span className="insights-list__bar insights-list__bar--muted" /><strong className={item.up ? 'text-red' : 'text-green'}>{item.up ? '+' : '−'}{formatCurrency(Math.abs(item.delta))}</strong><small>{formatCurrency(item.before)} → {formatCurrency(item.after)}</small></li>)}</ul></section>}
     </div>
   )
 }
@@ -3192,7 +3383,8 @@ function FinanceApp({ user }) {
     if (activeView === 'bills') return <BillsPage bills={bills} candidates={outlookCandidates} transactions={transactions} accounts={accounts} outlookAccount={outlookAccount} outlookStatus={outlookStatus} outlookMessage={outlookMessage} configured={isOutlookConfigured()} candidatePasswords={candidatePasswords} candidateBusy={candidateBusy} duplicateCount={duplicateBills.length + orphanDuplicateBudgets.length} onRemoveDuplicates={handleRemoveDuplicates} onConnect={handleConnectOutlook} onDisconnect={handleDisconnectOutlook} onSync={handleSyncOutlook} onAdd={() => openBillModal()} onEdit={openBillModal} onDelete={handleDeleteBill} onMatch={setBillMatchId} onLaunch={openTransactionModal} onReopen={handleReopenBill} onSaveAll={handleSaveAllCandidates} onDiscardAll={handleDiscardAllCandidates} onProcessCandidate={handleProcessCandidate} onCandidatePasswordChange={(id, value) => setCandidatePasswords((current) => ({ ...current, [id]: value }))} onReviewCandidate={(candidate) => openBillModal({ ...candidate, source: 'outlook', sender: candidate.sender, receivedAt: candidate.receivedAt })} onReviewManualBill={(bill) => openBillModal(bill)} onDiscardCandidate={handleDiscardCandidate} onImportStatement={(candidate) => { setStatementCandidate(candidate); setStatementModalOpen(true) }} />
     if (activeView === 'accounts') return <AccountsPage accounts={accounts} transactions={transactions} onAdd={() => { setEditingAccount(null); setAccountModalOpen(true) }} onEdit={(account) => { setEditingAccount(account); setAccountModalOpen(true) }} onImport={() => navigate('import')} />
     if (activeView === 'budgets') return <BudgetsPage budgets={budgets} groups={budgetGroups} income={budgetIncome} transactions={transactions} accounts={accounts} bills={bills} onAdd={openBudgetModal} onEdit={openBudgetModal} onDelete={handleDeleteBudget} onUpdateGroup={handleUpdateGroup} onIncomeChange={handleIncomeChange} onOpenCopy={openCopyBudgetModal} />
-    if (activeView === 'simulate') return <SimulationPage simulation={simulation} savedSimulations={savedSimulations} groups={budgetGroups} budgets={budgets} budgetIncome={budgetIncome} onChange={setSimulation} onCopyFrom={handleCopyBudgetToSimulation} onSave={handleSaveSimulation} onLoad={handleLoadSimulation} onDuplicate={handleDuplicateSimulation} onDelete={handleDeleteSimulation} />
+    if (activeView === 'insights') return <InsightsPage transactions={transactions} budgets={budgets} accounts={accounts} />
+  if (activeView === 'simulate') return <SimulationPage simulation={simulation} savedSimulations={savedSimulations} groups={budgetGroups} budgets={budgets} budgetIncome={budgetIncome} onChange={setSimulation} onCopyFrom={handleCopyBudgetToSimulation} onSave={handleSaveSimulation} onLoad={handleLoadSimulation} onDuplicate={handleDuplicateSimulation} onDelete={handleDeleteSimulation} />
     if (activeView === 'goals') return <ComingSoonPage type="goals" />
     return <SettingsPage
       user={user}

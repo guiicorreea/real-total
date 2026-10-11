@@ -924,3 +924,30 @@ button:focus-visible, input:focus-visible, select:focus-visible, [role='button']
 .crash-panel__detail { margin: 0 0 16px; padding: 11px 13px; border: 1px solid #f0d5d3; border-radius: 10px; background: #fdeeed; color: #8a1f19; font-size: 0.78rem; white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow: auto; }
 .crash-panel__actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .crash-panel__stack { margin: 0 0 16px; padding: 11px 13px; border: 1px solid #e2e0f0; border-radius: 10px; background: #f8f7fd; color: #45425c; font-size: 0.72rem; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; }
+.insights-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+
+.insights-dicas { padding: 16px 18px; }
+.insights-dicas__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+.insights-dicas__list li { display: flex; align-items: flex-start; gap: 9px; font-size: 0.85rem; line-height: 1.5; color: #45425c; }
+.insights-dicas__list svg { flex: none; margin-top: 2px; color: #4b45a8; }
+
+.insights-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.insights-block { padding: 16px 18px; }
+.insights-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.insights-list li { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.insights-list li small { grid-column: 3; font-size: 0.72rem; color: #6b6880; text-align: right; margin-top: -4px; }
+.insights-list strong { font-size: 0.88rem; white-space: nowrap; }
+
+.insights-list__bar { height: 6px; border-radius: 3px; background: #ece9fb; overflow: hidden; }
+.insights-list__bar i { display: block; height: 100%; border-radius: 3px; background: #c6514a; }
+.insights-list__bar--muted i { background: #9d97d9; }
+.insights-list__bar--ok i { background: #3f9d70; }
+
+.insights-empty { margin: 0; font-size: 0.82rem; color: #6b6880; }
+.insights-more { margin-top: 12px; }
+.insights-trends { grid-column: 1 / -1; }
+
+@media (max-width: 980px) {
+  .insights-tiles { grid-template-columns: repeat(2, 1fr); }
+  .insights-grid { grid-template-columns: 1fr; }
+}
