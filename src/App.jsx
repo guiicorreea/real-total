@@ -164,6 +164,7 @@ function normalizeBudgetItem(item, index = 0) {
     plannedByMonth: item.plannedByMonth ?? {},
     dueByMonth: item.dueByMonth ?? {},
     defaultDueDate: item.defaultDueDate ?? '',
+    adjustments: item.adjustments ?? {},
   }
 }
 
@@ -1842,14 +1843,14 @@ function BudgetRow({ budget, planned, spent, sharedCategory, accountName, dueDat
       <div className={classNames('budget-row__remaining', isOver && 'text-red', isClose && 'text-orange')}>{isOver ? `${formatCurrency(Math.abs(difference))} acima` : `${formatCurrency(difference)} saldo`}</div>
       <div className="budget-row__actions">
         {onAdjust && (
-          <button className="button button--ghost button--sm" onClick={() => {
+          <button className="icon-button icon-button--subtle" onClick={() => {
             const input = window.prompt(`Valor realizado correto para ${budget.label} (R$):`, Number(spent || 0).toFixed(2))
             if (input === null) return
             const value = Number(String(input).replace(',', '.'))
             if (Number.isNaN(value) || value < 0) { window.alert('Valor inválido.'); return }
             onAdjust(value)
-          }} aria-label={`Ajustar realizado de ${budget.label}`}>
-            <SlidersHorizontal size={14} /> Ajustar
+          }} aria-label={`Ajustar realizado de ${budget.label}`} title="Ajustar realizado">
+            <SlidersHorizontal size={14} />
           </button>
         )}
         {hasRemaining && onMarkRealized && (
@@ -3101,7 +3102,7 @@ function FinanceApp({ user }) {
       if (editingBudget) {
         return current.map((budget) => {
           if (budget.id !== editingBudget.id) return budget
-          const next = { ...budget, ...normalized }
+          const next = { ...budget, ...normalized, adjustments: budget.adjustments ?? {} }
           if (budget.billId && nextDueDate) {
             const previousCompetence = monthKeyFromDate(bills.find((bill) => bill.id === budget.billId)?.dueDate ?? '')
             const nextCompetence = monthKeyFromDate(nextDueDate)
