@@ -1705,6 +1705,10 @@ function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, o
       const stored = window.localStorage.getItem('real-total:last-budget-month')
       if (stored) return stored
     } catch {}
+    // Prefere o mês mais recente que tenha planejamento (boletos/itens),
+    // para não abrir em um mês vazio quando os dados estão em outro.
+    const plannedMonths = budgets.flatMap((budget) => Object.keys(budget.plannedByMonth ?? {})).sort().reverse()
+    if (plannedMonths.length) return plannedMonths[0]
     return monthKeyFromDate(transactions[0]?.date) || monthKeyFromDate(new Date().toISOString())
   })()
   const [monthKey, setMonthKey] = useState(initialMonth)
