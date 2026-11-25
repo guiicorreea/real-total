@@ -158,10 +158,24 @@ Deno.serve(async () => {
       .maybeSingle()
 
     const bills = Array.isArray(stateRow?.state?.bills) ? stateRow.state.bills : []
+    const budgets = Array.isArray(stateRow?.state?.budgets) ? stateRow.state.budgets : []
+    // Mapa rápido: boleto -> item do orcamento correspondente
+    const budgetByBill = new Map()
+    for (const budget of budgets) if (budget?.billId) budgetByBill.set(budget.billId, budget)
     const window = Number(setting.days_before) || 0
 
     const items = bills
       .filter((bill) => bill && bill.dueDate && bill.status !== 'paid' && !bill.matchedTransactionId && !bill.paidAt)
+      .filter((bill) => {
+        // Se o item do orcamento vinculado ja tem ajuste de realizado, nao avisa.
+        const budget = budgetByBill.get(bill.id)
+        if (budget) {
+          const competence = bill.competence || String(bill.dueDate).slice(0, 7)
+          const adjusted = Number(budget.adjustments?.[competence] ?? 0)
+          if (adjusted > 0) return false
+        }
+        return true
+      })
       .map((bill) => {
         const days = daysBetween(today, bill.dueDate)
         const share = (Number(bill.amount) || 0) * (Number(bill.mySharePercent ?? 100) / 100)
