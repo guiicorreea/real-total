@@ -75,16 +75,25 @@ import { getActiveUser, isCloudConfigured, onAuthChange, signIn as cloudSignIn, 
 import { DAYS_BEFORE_OPTIONS, fetchAlertSettings, saveAlertSettings } from './lib/alerts.js'
 
 const navItems = [
-  { id: 'dashboard', label: 'Visão geral', icon: LayoutDashboard },
-  { id: 'transactions', label: 'Transações', icon: ArrowLeftRight },
-  { id: 'import', label: 'Importar extrato', icon: Upload },
-  { id: 'bills', label: 'Boletos', icon: Mail },
-  { id: 'accounts', label: 'Contas', icon: Wallet },
-  { id: 'budgets', label: 'Orçamentos', icon: PiggyBank },
-  { id: 'insights', label: 'Insights', icon: Sparkles },
-  { id: 'simulate', label: 'Simular', icon: SlidersHorizontal },
-  { id: 'goals', label: 'Metas', icon: Target, soon: true },
+  { id: 'inicio', label: 'Início', icon: LayoutDashboard, view: 'dashboard' },
+  { id: 'orcamento', label: 'Orçamento', icon: PiggyBank, view: 'budgets' },
+  { id: 'lancamentos', label: 'Lançamentos', icon: ArrowLeftRight, view: 'transactions' },
+  { id: 'simular', label: 'Simular', icon: SlidersHorizontal, view: 'simulate' },
+  { id: 'configuracoes', label: 'Configurações', icon: Settings, view: 'settings' },
 ]
+
+// Mapeia cada view para o grupo do menu que a contém (para destacar o item ativo).
+const VIEW_GROUP = {
+  dashboard: 'inicio',
+  transactions: 'lancamentos',
+  import: 'lancamentos',
+  budgets: 'orcamento',
+  insights: 'orcamento',
+  simulate: 'simular',
+  accounts: 'configuracoes',
+  bills: 'configuracoes',
+  settings: 'configuracoes',
+}
 
 const viewTitles = {
   dashboard: 'Visão geral',
@@ -848,8 +857,8 @@ function DashboardPage({ accounts, transactions, budgets, bills, reminders, user
           <p>Acompanhe seu dinheiro com mais clareza e menos preocupação.</p>
         </div>
         <div className="heading-actions">
-          <button className="button button--ghost" onClick={() => onNavigate('import')}><Upload size={16} /> Importar extrato</button>
-          <button className="button button--primary" onClick={() => onNavigate('accounts')}><Plus size={17} /> Nova conta</button>
+          <button className="button button--ghost" onClick={() => onNavigate('transactions')}><Plus size={17} /> Novo lançamento</button>
+          <button className="button button--primary" onClick={() => onNavigate('import')}><Upload size={16} /> Importar extrato</button>
         </div>
       </section>
 
@@ -1633,7 +1642,7 @@ function SimulationPage({ simulation, savedSimulations, groups, budgets, budgetI
     </div>
   )
 }
-function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, onAdd, onEdit, onDelete, onUpdateGroup, onIncomeChange, onOpenCopy }) {
+function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, onAdd, onEdit, onDelete, onUpdateGroup, onIncomeChange, onOpenCopy, onMarkRealized, onNavigate }) {
   const initialMonth = monthKeyFromDate(transactions[0]?.date) || monthKeyFromDate(new Date().toISOString())
   const [monthKey, setMonthKey] = useState(initialMonth)
 
@@ -1745,7 +1754,10 @@ function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, o
     <div className="page-stack">
       <section className="page-heading">
         <div><span className="eyebrow">Planejamento mensal</span><h1>Orçamentos</h1><p>Planeje seus gastos por grupo e compare o previsto com o realizado dos extratos.</p></div>
-        <button className="button button--primary" onClick={() => onAdd(monthKey)}><Plus size={17} /> Novo item</button>
+        <div className="heading-actions">
+          {onNavigate && <button className="button button--ghost" onClick={() => onNavigate('insights')}><Sparkles size={16} /> Análise</button>}
+          <button className="button button--primary" onClick={() => onAdd(monthKey)}><Plus size={17} /> Novo item</button>
+        </div>
       </section>
 
       <div className="budget-month-switcher">
@@ -1768,7 +1780,7 @@ function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, o
 
       <section className="panel budgets-panel">
         <div className="panel-heading"><div><span className="eyebrow">Itens planejados</span><h2>Previsto x realizado</h2></div><span className="budgets-panel__note"><Info size={14} /> Clique no item para editar o valor deste mês</span></div>
-        {budgets.length ? <div className="budget-groups-list">{groupData.map((group) => group.items.length ? <div className="budget-group-section" key={group.id}><div className="budget-group-section__heading"><div><span className="budget-group-dot" style={{ background: group.color }} /><strong>{group.name}</strong><span>{group.target}% da meta</span></div><div><span>Planejado {formatCurrency(group.planned)}</span><span>Realizado {formatCurrency(group.realized)}</span></div></div><div className="budget-list">{group.items.map((budget) => <BudgetRow key={budget.id} budget={budget} planned={plannedBudgetAmount(budget, monthKey)} spent={getSpent(budget)} sharedCategory={!budget.keywords?.length && budgets.filter((item) => item.category === budget.category && item.accountId === budget.accountId).length > 1} accountName={budget.accountId ? accounts.find((account) => account.id === budget.accountId)?.name ?? 'Conta vinculada' : 'Todas as contas'} dueDate={plannedBudgetDueDate(budget, monthKey, billsById)} onEdit={() => onEdit(budget, monthKey)} onDelete={onDelete} />)}</div></div> : null)}</div> : <EmptyState icon={PiggyBank} title="Nenhum item criado" description="Crie categorias e valores planejados para comparar com seus extratos." action="Criar item" onAction={() => onAdd(monthKey)} />}
+        {budgets.length ? <div className="budget-groups-list">{groupData.map((group) => group.items.length ? <div className="budget-group-section" key={group.id}><div className="budget-group-section__heading"><div><span className="budget-group-dot" style={{ background: group.color }} /><strong>{group.name}</strong><span>{group.target}% da meta</span></div><div><span>Planejado {formatCurrency(group.planned)}</span><span>Realizado {formatCurrency(group.realized)}</span></div></div><div className="budget-list">{group.items.map((budget) => <BudgetRow key={budget.id} budget={budget} planned={plannedBudgetAmount(budget, monthKey)} spent={getSpent(budget)} sharedCategory={!budget.keywords?.length && budgets.filter((item) => item.category === budget.category && item.accountId === budget.accountId).length > 1} accountName={budget.accountId ? accounts.find((account) => account.id === budget.accountId)?.name ?? 'Conta vinculada' : 'Todas as contas'} dueDate={plannedBudgetDueDate(budget, monthKey, billsById)} monthKey={monthKey} onEdit={() => onEdit(budget, monthKey)} onDelete={onDelete} onMarkRealized={onMarkRealized} />)}</div></div> : null)}</div> : <EmptyState icon={PiggyBank} title="Nenhum item criado" description="Crie categorias e valores planejados para comparar com seus extratos." action="Criar item" onAction={() => onAdd(monthKey)} />}
         <button className="budget-add-line" onClick={() => onAdd(monthKey)}><Plus size={15} /> Adicionar item ao orçamento</button>
       </section>
 
@@ -1789,18 +1801,32 @@ function BudgetGroupCard({ group, totalPlanned, totalIncome, onUpdateGroup }) {
   return <article className={classNames('budget-group-card', isAbove && 'budget-group-card--over')} style={{ '--group-color': group.color, '--group-soft': group.soft }}><div className="budget-group-card__heading"><div className="budget-group-card__title"><span className="budget-group-dot" /><strong>{group.name}</strong></div><label className="budget-target-input"><span>meta</span><input type="number" min="0" max="100" value={group.target} onChange={(event) => onUpdateGroup(group.id, event.target.value)} /><b>%</b></label></div><div className="budget-group-card__values"><div><span>Planejado</span><strong>{formatCurrency(group.planned)}</strong></div><div><span>Realizado</span><strong>{formatCurrency(group.realized)}</strong></div><div><span>Saldo</span><strong className={group.difference < 0 ? 'text-red' : 'text-green'}>{formatCurrency(group.difference)}</strong></div></div><div className="budget-group-card__target"><span>Meta proporcional: {formatCurrency(targetAmount)}</span><span className={isAbove ? 'text-red' : 'text-green'}>{isAbove ? `${formatCurrency(difference)} acima da meta` : isBelow ? `${formatCurrency(Math.abs(difference))} abaixo da meta` : 'Na meta'}</span></div></article>
 }
 
-function BudgetRow({ budget, planned, spent, sharedCategory, accountName, dueDate, onEdit, onDelete }) {
+function BudgetRow({ budget, planned, spent, sharedCategory, accountName, dueDate, monthKey, onEdit, onDelete, onMarkRealized }) {
   const difference = planned - spent
   const percentage = planned ? (spent / planned) * 100 : 0
   const isOver = difference < 0
   const isClose = percentage >= 80 && !isOver
+  const hasRemaining = difference > 0.01
   const due = dueStatus(dueDate)
+  const handleMarkRealized = () => {
+    if (onMarkRealized && hasRemaining) {
+      onMarkRealized(budget.id, monthKey)
+    }
+  }
   return (
     <div className={classNames('budget-row', isOver && 'budget-row--over')}>
       <div className="budget-row__identity"><CategoryIcon category={budget.category} size={18} /><div><strong>{budget.label}</strong><span>{budget.source === 'bill' ? 'Boleto importado · ' : ''}{budget.category} · {accountName}{sharedCategory ? ' · use palavras-chave' : ''}</span>{due && <span className={classNames('budget-row__due', `budget-row__due--${due.level}`)}><CalendarDays size={12} /> Vence {formatDate(dueDate)} · {due.label}</span>}</div></div>
       <div className="budget-row__progress"><div className="budget-row__labels"><span><strong>{formatCurrency(spent)}</strong> realizado</span><strong>{formatCurrency(planned)}</strong></div><div className="progress-track"><span style={{ width: `${Math.min(percentage, 100)}%` }} /></div></div>
       <div className={classNames('budget-row__remaining', isOver && 'text-red', isClose && 'text-orange')}>{isOver ? `${formatCurrency(Math.abs(difference))} acima` : `${formatCurrency(difference)} saldo`}</div>
-      <div className="budget-row__actions"><button className="icon-button icon-button--subtle" onClick={onEdit} aria-label={`Editar ${budget.label}`}><Settings size={16} /></button><button className="icon-button icon-button--subtle" onClick={() => onDelete(budget.id)} aria-label={`Excluir ${budget.label}`}><Trash2 size={16} /></button></div>
+      <div className="budget-row__actions">
+        {hasRemaining && onMarkRealized && (
+          <button className="button button--soft button--sm" onClick={handleMarkRealized} aria-label={`Marcar ${budget.label} como realizado`}>
+            <CheckCircle2 size={14} /> Realizado
+          </button>
+        )}
+        <button className="icon-button icon-button--subtle" onClick={onEdit} aria-label={`Editar ${budget.label}`}><Settings size={16} /></button>
+        <button className="icon-button icon-button--subtle" onClick={() => onDelete(budget.id)} aria-label={`Excluir ${budget.label}`}><Trash2 size={16} /></button>
+      </div>
     </div>
   )
 }
@@ -2140,12 +2166,6 @@ function BudgetCopyModal({ open, sourceMonth, onClose, onCopy }) {
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><form className="modal" onSubmit={(event) => { event.preventDefault(); if (targetMonth && targetMonth !== sourceMonth) onCopy(targetMonth) }}><div className="modal__header"><div><span className="eyebrow">Planejamento mensal</span><h2>Copiar mês</h2></div><button type="button" className="icon-button" onClick={onClose}><X size={18} /></button></div><p className="modal__description">Os valores planejados de <strong>{formatMonthLabel(sourceMonth)}</strong> serão replicados para o mês escolhido. Os gastos realizados não serão copiados.</p><label className="field"><span>Mês de destino</span><input type="month" value={targetMonth} onChange={(event) => setTargetMonth(event.target.value)} required /></label><div className="modal__actions"><button type="button" className="button button--ghost" onClick={onClose}>Cancelar</button><button type="submit" className="button button--primary" disabled={!targetMonth || targetMonth === sourceMonth}><Copy size={16} /> Copiar orçamento</button></div></form></div>
 }
 
-function ComingSoonPage({ type }) {
-  const budgets = type === 'budgets'
-  return (
-    <div className="page-stack"><section className="page-heading"><div><span className="eyebrow">Próxima etapa</span><h1>{budgets ? 'Orçamentos' : 'Metas financeiras'}</h1><p>{budgets ? 'Defina limites por categoria e saiba quando precisa ajustar os gastos.' : 'Transforme planos em progresso visível e acompanhe cada conquista.'}</p></div></section><section className="coming-soon panel"><div className="coming-soon__art"><div className="coming-soon__orb coming-soon__orb--one" /><div className="coming-soon__orb coming-soon__orb--two" />{budgets ? <PiggyBank size={55} /> : <Target size={55} />}</div><span className="eyebrow">Em construção</span><h2>{budgets ? 'Seu dinheiro com limites mais inteligentes' : 'Cada meta, mais perto'}</h2><p>Primeiro validamos a importação e a classificação. Esta tela será ativada na próxima versão do Real Total.</p><button className="button button--soft" onClick={() => window.alert('Esta funcionalidade será adicionada em breve.')}>Avisar quando estiver pronto <Bell size={15} /></button></section></div>
-  )
-}
 
 function DueAlertCard({ alert, onChange, user }) {
   const [saving, setSaving] = useState(false)
@@ -2204,7 +2224,7 @@ function DueAlertCard({ alert, onChange, user }) {
   )
 }
 
-function SettingsPage({ onResetDemo, onStartEmpty, user, cloudStatus, alert: alertSettings, onAlertChange: setAlertSettings, onSignOut }) {
+function SettingsPage({ onResetDemo, onStartEmpty, user, cloudStatus, alert: alertSettings, onAlertChange: setAlertSettings, onSignOut, onNavigate }) {
   const lastSync = getLastSyncedAt()
   const syncLabel = !isCloudReady()
     ? 'Modo local'
@@ -2235,6 +2255,17 @@ function SettingsPage({ onResetDemo, onStartEmpty, user, cloudStatus, alert: ale
         </article>
         <DueAlertCard alert={alertSettings} onChange={setAlertSettings} user={user} />
       </section>
+      {onNavigate && (
+        <section className="panel settings-card settings-card--links">
+          <div className="settings-card__icon"><Wallet size={20} /></div>
+          <h2>Contas e boletos</h2>
+          <p>Gerencie suas contas/produtos e os boletos sincronizados com o Outlook.</p>
+          <div className="heading-actions">
+            <button className="button button--ghost" onClick={() => onNavigate('accounts')}><Wallet size={15} /> Contas</button>
+            <button className="button button--ghost" onClick={() => onNavigate('bills')}><Mail size={15} /> Boletos</button>
+          </div>
+        </section>
+      )}
       <section className="panel settings-reset">
         <div className="settings-reset__copy">
           <span className="settings-reset__icon"><Trash2 size={19} /></span>
@@ -3131,6 +3162,97 @@ function FinanceApp({ user }) {
     showToast('Item excluído do orçamento.')
   }
 
+  const handleMarkBudgetAsRealized = (budgetId, monthKey) => {
+    const budget = budgets.find((item) => item.id === budgetId)
+    if (!budget) return
+
+    const planned = plannedBudgetAmount(budget, monthKey)
+
+    // Calcula o realizado do item (mesma lógica do BudgetsPage)
+    let spent = 0
+    const monthTransactions = transactions.filter((t) => t.type === 'expense' && t.date.startsWith(monthKey))
+    for (const transaction of monthTransactions) {
+      if (budget.accountId && transaction.accountId !== budget.accountId) continue
+      const allocations = getTransactionAllocations(transaction)
+
+      // Nível 0: alocação direta no item do orçamento
+      if (allocations.some((a) => a.budgetItemId === budget.id)) {
+        spent += allocations
+          .filter((a) => a.budgetItemId === budget.id)
+          .reduce((sum, a) => sum + a.amount, 0)
+        continue
+      }
+
+      // Nível 1: boleto vinculado
+      if (budget.billId && transaction.linkedBillId === budget.billId) {
+        spent += allocations
+          .filter((a) => !a.budgetItemId)
+          .reduce((sum, a) => sum + a.amount, 0)
+        continue
+      }
+
+      // Nível 2: palavras-chave
+      const keywords = Array.isArray(budget.keywords) ? budget.keywords.filter(Boolean) : []
+      if (!keywords.length) continue
+      const text = normalizeText(`${transaction.description ?? ''} ${transaction.merchant ?? ''}`)
+      spent += allocations
+        .filter((a) => a.category === budget.category && keywords.some((k) => text.includes(normalizeText(k))))
+        .reduce((sum, a) => sum + a.amount, 0)
+    }
+
+    const remaining = Math.round((planned - spent) * 100) / 100
+
+    if (remaining <= 0.01) {
+      showToast('Este item já foi realizado ou não há valor pendente.')
+      return
+    }
+
+    // Usa a conta vinculada ao orçamento ou a primeira conta disponível
+    const account = budget.accountId ? accounts.find((acc) => acc.id === budget.accountId) : accounts[0]
+    if (!account) {
+      showToast('É necessário ter pelo menos uma conta cadastrada.')
+      return
+    }
+
+    const transaction = {
+      id: `transaction-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      date: todayIsoDate(),
+      description: budget.label,
+      merchant: budget.label,
+      amount: remaining,
+      type: 'expense',
+      category: budget.category,
+      accountId: account.id,
+      destinationAccountId: null,
+      institution: account.institution ?? 'Manual',
+      status: 'confirmed',
+      source: 'manual',
+      linkedBillId: budget.billId ?? null,
+      allocations: [{ category: budget.category, amount: remaining, budgetItemId: budget.id }],
+      createdAt: new Date().toISOString(),
+    }
+
+    setTransactions((current) => [transaction, ...current])
+    setAccounts((current) => adjustBalancesForTransaction(current, transaction))
+
+    // Se o orçamento estiver vinculado a um boleto, marca o boleto como pago
+    if (budget.billId) {
+      setBills((current) => current.map((bill) => bill.id === budget.billId ? {
+        ...bill,
+        status: 'paid',
+        paidAt: transaction.date,
+        matchedTransactionId: transaction.id,
+        matchConfidence: 1,
+        manualMatch: true,
+        paidAmount: remaining,
+        amountDifference: null,
+      } : bill))
+      showToast('Pagamento registrado. O lançamento entrou como realizado no orçamento e o boleto foi conciliado.')
+    } else {
+      showToast('Realizado registrado. O valor entrou como gasto no orçamento.')
+    }
+  }
+
   const handleUpdateGroup = (id, target) => {
     setBudgetGroups((current) => current.map((group) => group.id === id ? { ...group, target: Math.max(0, Math.min(100, Number(target) || 0)) } : group))
   }
@@ -3367,8 +3489,15 @@ function FinanceApp({ user }) {
 
   const renderView = () => {
     if (activeView === 'dashboard') return <DashboardPage accounts={accounts} transactions={transactions} budgets={budgets} bills={bills} reminders={reminders} userName={userName} onNavigate={navigate} onImportDemo={() => { navigate('import'); handleDemo('Nubank') }} />
-    if (activeView === 'transactions') return <TransactionsPage transactions={transactions} accounts={accounts} search={globalSearch} onSearch={setGlobalSearch} onImport={() => navigate('import')} onExport={handleExport} onIgnore={handleIgnoreTransaction} onSplit={openSplitTransaction} onAdd={() => openTransactionModal()} onDelete={handleDeleteTransactions} onDeleteAll={handleDeleteAllTransactions} />
-    if (activeView === 'import') return <ImportPage accounts={accounts} form={importForm} onFormChange={(patch) => patch.institution ? handleInstitutionChange(patch.institution) : setImportForm((current) => ({ ...current, ...patch }))} file={importFile} onFile={handleFile} status={importStatus} rows={importRows} warning={importWarning} password={importPassword} onPasswordChange={setImportPassword} requiresPassword={importRequiresPassword} onParse={handleParse} onDemo={handleDemo} onReset={resetImport} onUpdateRow={handleUpdateRow} onSplit={openSplitReview} onToggleRow={handleToggleImportRow} onKeepMonth={handleKeepCurrentMonth} onConfirm={handleConfirmImport} onNavigate={navigate} reconciliation={importReconciliation} outlook={{
+    if (activeView === 'transactions' || activeView === 'import') return (
+      <div className="page-stack">
+        <div className="tab-bar">
+          <button className={classNames('tab-bar__item', activeView === 'transactions' && 'tab-bar__item--active')} onClick={() => navigate('transactions')}>Lançamentos</button>
+          <button className={classNames('tab-bar__item', activeView === 'import' && 'tab-bar__item--active')} onClick={() => navigate('import')}>Importar extrato</button>
+        </div>
+        {activeView === 'transactions'
+          ? <TransactionsPage transactions={transactions} accounts={accounts} search={globalSearch} onSearch={setGlobalSearch} onImport={() => navigate('import')} onExport={handleExport} onIgnore={handleIgnoreTransaction} onSplit={openSplitTransaction} onAdd={() => openTransactionModal()} onDelete={handleDeleteTransactions} onDeleteAll={handleDeleteAllTransactions} />
+          : <ImportPage accounts={accounts} form={importForm} onFormChange={(patch) => patch.institution ? handleInstitutionChange(patch.institution) : setImportForm((current) => ({ ...current, ...patch }))} file={importFile} onFile={handleFile} status={importStatus} rows={importRows} warning={importWarning} password={importPassword} onPasswordChange={setImportPassword} requiresPassword={importRequiresPassword} onParse={handleParse} onDemo={handleDemo} onReset={resetImport} onUpdateRow={handleUpdateRow} onSplit={openSplitReview} onToggleRow={handleToggleImportRow} onKeepMonth={handleKeepCurrentMonth} onConfirm={handleConfirmImport} onNavigate={navigate} reconciliation={importReconciliation} outlook={{
     configured: isOutlookConfigured(),
     account: outlookAccount,
     status: outlookStatus,
@@ -3380,12 +3509,33 @@ function FinanceApp({ user }) {
     onOpen: (candidate) => { setStatementCandidate(candidate); setStatementModalOpen(true) },
     onProcess: handleProcessCandidate,
   }} />
-    if (activeView === 'bills') return <BillsPage bills={bills} candidates={outlookCandidates} transactions={transactions} accounts={accounts} outlookAccount={outlookAccount} outlookStatus={outlookStatus} outlookMessage={outlookMessage} configured={isOutlookConfigured()} candidatePasswords={candidatePasswords} candidateBusy={candidateBusy} duplicateCount={duplicateBills.length + orphanDuplicateBudgets.length} onRemoveDuplicates={handleRemoveDuplicates} onConnect={handleConnectOutlook} onDisconnect={handleDisconnectOutlook} onSync={handleSyncOutlook} onAdd={() => openBillModal()} onEdit={openBillModal} onDelete={handleDeleteBill} onMatch={setBillMatchId} onLaunch={openTransactionModal} onReopen={handleReopenBill} onSaveAll={handleSaveAllCandidates} onDiscardAll={handleDiscardAllCandidates} onProcessCandidate={handleProcessCandidate} onCandidatePasswordChange={(id, value) => setCandidatePasswords((current) => ({ ...current, [id]: value }))} onReviewCandidate={(candidate) => openBillModal({ ...candidate, source: 'outlook', sender: candidate.sender, receivedAt: candidate.receivedAt })} onReviewManualBill={(bill) => openBillModal(bill)} onDiscardCandidate={handleDiscardCandidate} onImportStatement={(candidate) => { setStatementCandidate(candidate); setStatementModalOpen(true) }} />
-    if (activeView === 'accounts') return <AccountsPage accounts={accounts} transactions={transactions} onAdd={() => { setEditingAccount(null); setAccountModalOpen(true) }} onEdit={(account) => { setEditingAccount(account); setAccountModalOpen(true) }} onImport={() => navigate('import')} />
-    if (activeView === 'budgets') return <BudgetsPage budgets={budgets} groups={budgetGroups} income={budgetIncome} transactions={transactions} accounts={accounts} bills={bills} onAdd={openBudgetModal} onEdit={openBudgetModal} onDelete={handleDeleteBudget} onUpdateGroup={handleUpdateGroup} onIncomeChange={handleIncomeChange} onOpenCopy={openCopyBudgetModal} />
-    if (activeView === 'insights') return <InsightsPage transactions={transactions} budgets={budgets} accounts={accounts} />
+        }
+      </div>
+    )
+    if (activeView === 'accounts' || activeView === 'bills' || activeView === 'settings') return (
+      <div className="page-stack">
+        <div className="tab-bar">
+          <button className={classNames('tab-bar__item', activeView === 'accounts' && 'tab-bar__item--active')} onClick={() => navigate('accounts')}>Contas</button>
+          <button className={classNames('tab-bar__item', activeView === 'bills' && 'tab-bar__item--active')} onClick={() => navigate('bills')}>Boletos</button>
+          <button className={classNames('tab-bar__item', activeView === 'settings' && 'tab-bar__item--active')} onClick={() => navigate('settings')}>Preferências</button>
+        </div>
+        {activeView === 'accounts' && <AccountsPage accounts={accounts} transactions={transactions} onAdd={() => { setEditingAccount(null); setAccountModalOpen(true) }} onEdit={(account) => { setEditingAccount(account); setAccountModalOpen(true) }} onImport={() => navigate('import')} />}
+        {activeView === 'bills' && <BillsPage bills={bills} candidates={outlookCandidates} transactions={transactions} accounts={accounts} outlookAccount={outlookAccount} outlookStatus={outlookStatus} outlookMessage={outlookMessage} configured={isOutlookConfigured()} candidatePasswords={candidatePasswords} candidateBusy={candidateBusy} duplicateCount={duplicateBills.length + orphanDuplicateBudgets.length} onRemoveDuplicates={handleRemoveDuplicates} onConnect={handleConnectOutlook} onDisconnect={handleDisconnectOutlook} onSync={handleSyncOutlook} onAdd={() => openBillModal()} onEdit={openBillModal} onDelete={handleDeleteBill} onMatch={setBillMatchId} onLaunch={openTransactionModal} onReopen={handleReopenBill} onSaveAll={handleSaveAllCandidates} onDiscardAll={handleDiscardAllCandidates} onProcessCandidate={handleProcessCandidate} onCandidatePasswordChange={(id, value) => setCandidatePasswords((current) => ({ ...current, [id]: value }))} onReviewCandidate={(candidate) => openBillModal({ ...candidate, source: 'outlook', sender: candidate.sender, receivedAt: candidate.receivedAt })} onReviewManualBill={(bill) => openBillModal(bill)} onDiscardCandidate={handleDiscardCandidate} onImportStatement={(candidate) => { setStatementCandidate(candidate); setStatementModalOpen(true) }} />}
+        {activeView === 'settings' && <SettingsPage user={user} cloudStatus={cloudStatus} alert={alertSettings} onAlertChange={setAlertSettings} onSignOut={isCloudConfigured ? () => cloudSignOut().catch(() => {}) : null} onResetDemo={() => handleResetData('demo')} onStartEmpty={() => handleResetData('empty')} onNavigate={navigate} />}
+      </div>
+    )
+    if (activeView === 'budgets' || activeView === 'insights') return (
+      <div className="page-stack">
+        <div className="tab-bar">
+          <button className={classNames('tab-bar__item', activeView === 'budgets' && 'tab-bar__item--active')} onClick={() => navigate('budgets')}>Orçamento</button>
+          <button className={classNames('tab-bar__item', activeView === 'insights' && 'tab-bar__item--active')} onClick={() => navigate('insights')}>Análise</button>
+        </div>
+        {activeView === 'budgets'
+          ? <BudgetsPage budgets={budgets} groups={budgetGroups} income={budgetIncome} transactions={transactions} accounts={accounts} bills={bills} onAdd={openBudgetModal} onEdit={openBudgetModal} onDelete={handleDeleteBudget} onUpdateGroup={handleUpdateGroup} onIncomeChange={handleIncomeChange} onOpenCopy={openCopyBudgetModal} onMarkRealized={handleMarkBudgetAsRealized} onNavigate={navigate} />
+          : <InsightsPage transactions={transactions} budgets={budgets} accounts={accounts} />}
+      </div>
+    )
   if (activeView === 'simulate') return <SimulationPage simulation={simulation} savedSimulations={savedSimulations} groups={budgetGroups} budgets={budgets} budgetIncome={budgetIncome} onChange={setSimulation} onCopyFrom={handleCopyBudgetToSimulation} onSave={handleSaveSimulation} onLoad={handleLoadSimulation} onDuplicate={handleDuplicateSimulation} onDelete={handleDeleteSimulation} />
-    if (activeView === 'goals') return <ComingSoonPage type="goals" />
     return <SettingsPage
       user={user}
       cloudStatus={cloudStatus}
@@ -3394,6 +3544,7 @@ function FinanceApp({ user }) {
       onSignOut={isCloudConfigured ? () => cloudSignOut().catch(() => {}) : null}
       onResetDemo={() => handleResetData('demo')}
       onStartEmpty={() => handleResetData('empty')}
+      onNavigate={navigate}
     />
   }
 
@@ -3402,8 +3553,8 @@ function FinanceApp({ user }) {
       <aside className={classNames('sidebar', mobileNavOpen && 'sidebar--open')}>
         <div className="brand"><span className="brand__mark"><span /></span><span>Real Total</span></div>
         <div className="sidebar__workspace"><span className="eyebrow eyebrow--sidebar">Meu espaço</span><button className="workspace-switch"><span className="workspace-avatar">{userInitial}</span><span><strong>{userName}</strong><small>Plano pessoal</small></span><ChevronDown size={14} /></button></div>
-        <nav className="main-nav"><span className="nav-label">Menu</span>{navItems.map((item) => { const Icon = item.icon; return <button key={item.id} className={classNames('nav-item', activeView === item.id && 'nav-item--active')} onClick={() => navigate(item.id)}><Icon size={18} /><span>{item.label}</span>{item.id === 'transactions' && <em>{transactions.length}</em>}{item.soon && <small>Em breve</small>}</button> })}</nav>
-        <div className="sidebar__bottom"><div className="sidebar-tip"><span className="sidebar-tip__icon"><Sparkles size={15} /></span><div><strong>Dica do Real Total</strong><p>Importe um extrato para liberar seus relatórios.</p></div><ChevronRight size={14} /></div><button className="nav-item" onClick={() => navigate('settings')}><Settings size={18} /><span>Configurações</span></button><button className="nav-item sidebar-user" onClick={() => navigate('settings')}><span className="user-avatar">{userInitial}</span><div><strong>{userName}</strong><span>{user?.email ?? 'Conta local'}</span></div><LogOut size={15} /></button></div>
+        <nav className="main-nav"><span className="nav-label">Menu</span>{navItems.map((item) => { const Icon = item.icon; const activeGroup = VIEW_GROUP[activeView] ?? activeView; return <button key={item.id} className={classNames('nav-item', activeGroup === item.id && 'nav-item--active')} onClick={() => navigate(item.view)}><Icon size={18} /><span>{item.label}</span>{item.id === 'lancamentos' && <em>{transactions.length}</em>}</button> })}</nav>
+        <div className="sidebar__bottom"><div className="sidebar-tip"><span className="sidebar-tip__icon"><Sparkles size={15} /></span><div><strong>Dica do Real Total</strong><p>Importe um extrato para liberar seus relatórios.</p></div><ChevronRight size={14} /></div><button className="nav-item sidebar-user" onClick={() => navigate('settings')}><span className="user-avatar">{userInitial}</span><div><strong>{userName}</strong><span>{user?.email ?? 'Conta local'}</span></div><LogOut size={15} /></button></div>
       </aside>
       {mobileNavOpen && <button className="sidebar-backdrop" onClick={() => setMobileNavOpen(false)} aria-label="Fechar menu" />}
       <div className="main-area">
