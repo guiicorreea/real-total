@@ -578,6 +578,7 @@ function buildBudgetItemForBill(bill, existingBudget) {
     keywords: [bill.description],
     source: 'bill',
     billId: bill.id,
+    adjustments: existingBudget?.adjustments ?? {},
   })
 }
 
@@ -2588,6 +2589,36 @@ function FinanceApp({ user }) {
   const [cloudStatus, setCloudStatus] = useState('sincronizando')
   const [bellOpen, setBellOpen] = useState(false)
   const [alertSettings, setAlertSettings] = useState({ email: '', enabled: false, days_before: 1 })
+  // Garante que todo boleto tenha um item correspondente no orçamento (cria
+  // os que faltam, por exemplo boletos antigos importados antes desta versão).
+  useEffect(() => {
+    setBudgets((current) => {
+      let next = [...current]
+      let changed = false
+      for (const bill of bills) {
+        const existingIndex = next.findIndex((budget) => budget.billId === bill.id)
+        const item = buildBudgetItemForBill(bill, existingIndex >= 0 ? next[existingIndex] : null)
+        if (existingIndex >= 0) {
+          if (JSON.stringify(next[existingIndex]) !== JSON.stringify(item)) {
+            next[existingIndex] = item
+            changed = true
+          }
+        } else {
+          next.push(item)
+          changed = true
+        }
+      }
+      // Remove itens de orçamento cujo boleto foi excluído.
+      const billIds = new Set(bills.map((bill) => bill.id))
+      const filtered = next.filter((budget) => !budget.billId || billIds.has(budget.billId))
+      if (filtered.length !== next.length) {
+        next = filtered
+        changed = true
+      }
+      return changed ? next : current
+    })
+  }, [bills])
+
   const reminders = useMemo(() => collectDueReminders({ bills, budgets, transactions }), [bills, budgets, transactions])
 
   useEffect(() => {
