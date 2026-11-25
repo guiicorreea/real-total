@@ -1803,7 +1803,7 @@ function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, o
 
       <section className="panel budgets-panel">
         <div className="panel-heading"><div><span className="eyebrow">Itens planejados</span><h2>Previsto x realizado</h2></div><span className="budgets-panel__note"><Info size={14} /> Clique no item para editar o valor deste mês</span></div>
-        {budgets.length ? <div className="budget-groups-list">{groupData.map((group) => group.items.length ? <div className="budget-group-section" key={group.id}><div className="budget-group-section__heading"><div><span className="budget-group-dot" style={{ background: group.color }} /><strong>{group.name}</strong><span>{group.target}% da meta</span></div><div><span>Planejado {formatCurrency(group.planned)}</span><span>Realizado {formatCurrency(group.realized)}</span></div></div><div className="budget-list">{group.items.map((budget) => <BudgetRow key={budget.id} budget={budget} planned={plannedBudgetAmount(budget, monthKey)} spent={getSpent(budget)} sharedCategory={!budget.keywords?.length && budgets.filter((item) => item.category === budget.category && item.accountId === budget.accountId).length > 1} accountName={budget.accountId ? accounts.find((account) => account.id === budget.accountId)?.name ?? 'Conta vinculada' : 'Todas as contas'} dueDate={plannedBudgetDueDate(budget, monthKey, billsById)} monthKey={monthKey} paid={budget.billId ? (billsById[budget.billId]?.status === 'paid' || !!billsById[budget.billId]?.matchedTransactionId) : false} onEdit={() => onEdit(budget, monthKey)} onDelete={onDelete} onMarkRealized={onMarkRealized} onAdjust={(desired) => onAdjustRealized?.(budget.id, monthKey, desired - getSpent(budget))} />)}</div></div> : null)}</div> : <EmptyState icon={PiggyBank} title="Nenhum item criado" description="Crie categorias e valores planejados para comparar com seus extratos." action="Criar item" onAction={() => onAdd(monthKey)} />}
+        {budgets.length ? <div className="budget-groups-list">{groupData.map((group) => group.items.length ? <div className="budget-group-section" key={group.id}><div className="budget-group-section__heading"><div><span className="budget-group-dot" style={{ background: group.color }} /><strong>{group.name}</strong><span>{group.target}% da meta</span></div><div><span>Planejado {formatCurrency(group.planned)}</span><span>Realizado {formatCurrency(group.realized)}</span></div></div><div className="budget-list">{group.items.map((budget) => <BudgetRow key={budget.id} budget={budget} planned={plannedBudgetAmount(budget, monthKey)} spent={getSpent(budget)} sharedCategory={!budget.keywords?.length && budgets.filter((item) => item.category === budget.category && item.accountId === budget.accountId).length > 1} accountName={budget.accountId ? accounts.find((account) => account.id === budget.accountId)?.name ?? 'Conta vinculada' : 'Todas as contas'} dueDate={plannedBudgetDueDate(budget, monthKey, billsById)} monthKey={monthKey} paid={budget.billId ? (billsById[budget.billId]?.status === 'paid' || !!billsById[budget.billId]?.matchedTransactionId) : false} onEdit={() => onEdit(budget, monthKey)} onDelete={onDelete} onMarkRealized={onMarkRealized} onAdjust={(desired) => onAdjustRealized?.(budget.id, monthKey, desired - getSpent(budget), desired >= plannedBudgetAmount(budget, monthKey) - 0.01)} />)}</div></div> : null)}</div> : <EmptyState icon={PiggyBank} title="Nenhum item criado" description="Crie categorias e valores planejados para comparar com seus extratos." action="Criar item" onAction={() => onAdd(monthKey)} />}
         <button className="budget-add-line" onClick={() => onAdd(monthKey)}><Plus size={15} /> Adicionar item ao orçamento</button>
       </section>
 
@@ -1838,7 +1838,7 @@ function BudgetRow({ budget, planned, spent, sharedCategory, accountName, dueDat
   }
   return (
     <div className={classNames('budget-row', isOver && 'budget-row--over')}>
-      <div className="budget-row__identity"><CategoryIcon category={budget.category} size={18} /><div><strong>{budget.label}</strong><span>{budget.source === 'bill' ? 'Boleto importado · ' : ''}{budget.category} · {accountName}{sharedCategory ? ' · use palavras-chave' : ''}</span>{paid ? <span className="budget-row__due budget-row__due--ok"><CheckCircle2 size={12} /> Pago</span> : due && <span className={classNames('budget-row__due', `budget-row__due--${due.level}`)}><CalendarDays size={12} /> Vence {formatDate(dueDate)} - {due.label}</span>}</div></div>
+      <div className="budget-row__identity"><CategoryIcon category={budget.category} size={18} /><div><strong>{budget.label}</strong><span>{budget.source === 'bill' ? 'Boleto importado · ' : ''}{budget.category} · {accountName}{sharedCategory ? ' · use palavras-chave' : ''}</span>{paid ? <span className="budget-row__due budget-row__due--ok"><CheckCircle2 size={12} /> Pago</span> : spent >= planned - 0.01 && planned > 0 ? <span className="budget-row__due budget-row__due--ok"><CheckCircle2 size={12} /> Realizado</span> : due && <span className={classNames('budget-row__due', `budget-row__due--${due.level}`)}><CalendarDays size={12} /> Vence {formatDate(dueDate)} - {due.label}</span>}</div></div>
       <div className="budget-row__progress"><div className="budget-row__labels"><span><strong>{formatCurrency(spent)}</strong> realizado</span><strong>{planned > 0 ? formatCurrency(planned) : '—'}</strong></div><div className="progress-track"><span style={{ width: `${Math.min(percentage, 100)}%` }} /></div></div>
       <div className={classNames('budget-row__remaining', isOver && 'text-red', isClose && 'text-orange')}>{isOver ? `${formatCurrency(Math.abs(difference))} acima` : `${formatCurrency(difference)} saldo`}</div>
       <div className="budget-row__actions">
@@ -3295,11 +3295,28 @@ function FinanceApp({ user }) {
     setBudgetGroups((current) => current.map((group) => group.id === id ? { ...group, target: Math.max(0, Math.min(100, Number(target) || 0)) } : group))
   }
 
-  const handleAdjustRealized = (budgetId, monthKey, delta) => {
-    setBudgets((current) => current.map((budget) => budget.id === budgetId ? {
-      ...budget,
-      adjustments: { ...(budget.adjustments ?? {}), [monthKey]: Number(((budget.adjustments?.[monthKey] ?? 0) + delta).toFixed(2)) },
-    } : budget))
+  const handleAdjustRealized = (budgetId, monthKey, delta, isComplete = false) => {
+    setBudgets((current) => {
+      const updated = current.map((budget) => {
+        if (budget.id !== budgetId) return budget
+        const newAdjustment = Number(((budget.adjustments?.[monthKey] ?? 0) + delta).toFixed(2))
+        const next = { ...budget, adjustments: { ...(budget.adjustments ?? {}), [monthKey]: newAdjustment } }
+        // Se o realizado atingiu (ou superou) o planejado e o item está ligado
+        // a um boleto, marca o boleto como pago para parar os alertas.
+        return next
+      })
+      return updated
+    })
+    // Marca boleto como pago se o item vinculado atingiu o planejado
+    const budget = budgets.find((b) => b.id === budgetId)
+    if (isComplete && budget?.billId) {
+      setBills((current) => current.map((bill) => {
+        if (bill.id !== budget.billId) return bill
+        // só marca se ainda não pago
+        if (bill.status === 'paid' || bill.matchedTransactionId) return bill
+        return { ...bill, status: 'paid', paidAt: todayIsoDate(), paidAmount: plannedBudgetAmount(budget, monthKey), manualMatch: true }
+      }))
+    }
     showToast('Realizado ajustado.')
   }
 
