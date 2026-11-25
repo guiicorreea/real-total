@@ -219,7 +219,7 @@ function dueStatus(dueDate, today = new Date()) {
 }
 
 function billSignature(bill) {
-  return [normalizeText(bill?.description ?? ''), bill?.dueDate ?? '', Number(bill?.amount || 0).toFixed(2)].join('|')
+  return [normalizeText(bill?.description ?? bill?.label ?? ''), bill?.dueDate ?? '', Number(bill?.amount || 0).toFixed(2)].join('|')
 }
 
 function findBillBySignature(bills, candidate, ignoreId = '') {
@@ -250,29 +250,12 @@ function collectDueReminders({ bills, budgets, transactions = [], withinDays = 1
     const linkedBudget = budgets.find((budget) => budget.billId === bill.id)
     if (linkedBudget) {
       const month = monthKeyFromDate(bill.dueDate)
-      let spent = Number(linkedBudget.adjustments?.[month] ?? 0)
-      const monthTransactions = (transactions || []).filter((transaction) => transaction.type === 'expense' && transaction.date.startsWith(month))
-      for (const transaction of monthTransactions) {
-        if (linkedBudget.accountId && transaction.accountId !== linkedBudget.accountId) continue
-        const allocations = getTransactionAllocations(transaction)
-        if (allocations.some((allocation) => allocation.budgetItemId === linkedBudget.id)) {
-          spent += allocations.filter((allocation) => allocation.budgetItemId === linkedBudget.id).reduce((sum, allocation) => sum + allocation.amount, 0)
-          continue
-        }
-        if (transaction.linkedBillId === linkedBudget.billId) {
-          spent += allocations.filter((allocation) => !allocation.budgetItemId).reduce((sum, allocation) => sum + allocation.amount, 0)
-          continue
-        }
-        const keywords = Array.isArray(linkedBudget.keywords) ? linkedBudget.keywords.filter(Boolean) : []
-        if (!keywords.length) continue
-        const text = normalizeText(`${transaction.description ?? ''} ${transaction.merchant ?? ''}`)
-        spent += allocations.filter((allocation) => allocation.category === linkedBudget.category && keywords.some((keyword) => text.includes(normalizeText(keyword)))).reduce((sum, allocation) => sum + allocation.amount, 0)
-      }
+      const spent = realizedForBudgetMonth(linkedBudget, month, transactions)
       const planned = plannedBudgetAmount(linkedBudget, month)
-      const billAmount = Number(bill.amount || 0) * Number(bill.mySharePercent ?? 100) / 100
       const adjusted = Number(linkedBudget.adjustments?.[month] ?? 0)
-      // Já realizado: chegou no previsto, no valor do boleto ou recebeu um
-      // ajuste manual de realizado. Não deve gerar alerta de vencimento.
+      const billAmount = billShareAmount(bill)
+      // Já realizado: recebeu ajuste manual, chegou no previsto ou no valor
+      // do boleto. Não deve gerar alerta de vencimento.
       if (adjusted > 0) continue
       if (planned > 0 && spent >= planned - 0.01) continue
       if (billAmount > 0 && spent >= billAmount - 0.01) continue
@@ -293,6 +276,10 @@ function collectDueReminders({ bills, budgets, transactions = [], withinDays = 1
     if (budgetItemShadowsBill(budget, currentMonth, bills)) continue
     const dueDate = budget.dueByMonth?.[currentMonth] || budget.defaultDueDate || ''
     if (!dueDate) continue
+    // Item manual já realizado (ou com ajuste manual) não gera alerta.
+    if (Number(budget.adjustments?.[currentMonth] ?? 0) > 0) continue
+    const planned = plannedBudgetAmount(budget, currentMonth)
+    if (planned > 0 && realizedForBudgetMonth(budget, currentMonth, transactions) >= planned - 0.01) continue
     reminders.push({
       id: `budget-${budget.id}`,
       label: budget.label,
@@ -344,6 +331,38 @@ function getTransactionAllocations(transaction) {
     : []
   if (allocations.length) return allocations.map((allocation) => ({ ...allocation, amount: Number(allocation.amount || 0) }))
   return [{ category: transaction?.category ?? 'Outros', amount: Number(transaction?.amount || 0) }]
+}
+
+// Realizado de um item do orcamento em um mes: alocacao direta, boleto
+// vinculado, palavras-chave e ajuste manual. Fonte unica para alertas,
+// orcamento e o botao "marcar como realizado".
+function realizedForBudgetMonth(budget, monthKey, transactions = []) {
+  let spent = Number(budget?.adjustments?.[monthKey] ?? 0)
+  for (const transaction of transactions || []) {
+    if (transaction.type !== 'expense') continue
+    if (!String(transaction.date || '').startsWith(monthKey)) continue
+    if (budget.accountId && transaction.accountId !== budget.accountId) continue
+    const allocations = getTransactionAllocations(transaction)
+    if (allocations.some((allocation) => allocation.budgetItemId === budget.id)) {
+      spent += allocations
+        .filter((allocation) => allocation.budgetItemId === budget.id)
+        .reduce((sum, allocation) => sum + allocation.amount, 0)
+      continue
+    }
+    if (budget.billId && transaction.linkedBillId === budget.billId) {
+      spent += allocations
+        .filter((allocation) => !allocation.budgetItemId)
+        .reduce((sum, allocation) => sum + allocation.amount, 0)
+      continue
+    }
+    const keywords = Array.isArray(budget.keywords) ? budget.keywords.filter(Boolean) : []
+    if (!keywords.length) continue
+    const text = normalizeText(`${transaction.description ?? ''} ${transaction.merchant ?? ''}`)
+    spent += allocations
+      .filter((allocation) => !allocation.budgetItemId && allocation.category === budget.category && keywords.some((keyword) => text.includes(normalizeText(keyword))))
+      .reduce((sum, allocation) => sum + allocation.amount, 0)
+  }
+  return spent
 }
 
 function guessCategoryFromDescription(value) {
@@ -465,8 +484,13 @@ function plannedByCategoryForMonth(budgets, monthKey) {
   return totals
 }
 
-function buildInsights({ transactions, budgets, monthKey, previousMonthKey }) {
+function buildInsights({ transactions, budgets, monthKey, previousMonthKey, manualIncome = 0 }) {
   const current = categorySpendForMonth(transactions, monthKey)
+  // Mesma regra do painel: sem receita no extrato, vale a receita manual.
+  if (current.income <= 0 && Number(manualIncome) > 0) {
+    current.income = Number(manualIncome)
+    current.net = current.income + current.yield - current.expenses
+  }
   const previous = previousMonthKey ? categorySpendForMonth(transactions, previousMonthKey) : null
   const planned = plannedByCategoryForMonth(budgets, monthKey)
 
@@ -930,21 +954,21 @@ function DashboardPage({ accounts, transactions, budgets, bills, income: manualI
             <span className="balance-card__badge"><ShieldCheck size={14} /> Dados protegidos</span>
           </div>
           <div className="balance-card__bottom">
-            <div className="balance-card__trend"><TrendingUp size={15} /> 8,4% <span>vs. mês anterior</span></div>
+            <div className="balance-card__trend"><TrendingUp size={15} /> <span>saldo consolidado das contas</span></div>
             <div className="mini-chart" aria-hidden="true">
               <span style={{ height: '35%' }} /><span style={{ height: '48%' }} /><span style={{ height: '42%' }} /><span style={{ height: '63%' }} /><span style={{ height: '55%' }} /><span style={{ height: '76%' }} /><span style={{ height: '90%' }} />
             </div>
           </div>
         </article>
         <div className="stat-stack">
-          <StatCard label="Receitas do mês" value={formatCurrency(income)} helper="+12,8% vs. mês anterior" trend icon={ArrowDownRight} tone="green" />
+          <StatCard label="Receitas do mês" value={formatCurrency(income)} helper={income > 0 ? 'extrato ou receita manual' : 'nenhuma receita neste mês'} icon={ArrowDownRight} tone="green" />
           <StatCard label="Despesas do mês" value={formatCurrency(expenses)} helper={budgetHelper} icon={ArrowUpRight} tone="orange" />
         </div>
         <article className="savings-card">
           <div className="savings-card__heading"><span className="eyebrow">Taxa de poupança</span><span className="savings-card__icon"><PiggyBank size={18} /></span></div>
           <strong>{savingsRate}%</strong>
           <div className="progress-track"><span style={{ width: `${Math.min(savingsRate, 100)}%` }} /></div>
-          <p>Você está guardando mais este mês.</p>
+          <p>{income > 0 ? (savingsRate >= 20 ? 'Boa margem de sobra neste mês.' : savingsRate > 0 ? 'Sobra pequena neste mês.' : 'As despesas consumiram a receita.') : 'Sem receita registrada neste mês.'}</p>
           {yields > 0 && <p className="savings-card__yield"><Sparkles size={13} /> Rendimentos e Caixinha: {formatCurrency(yields)} <small>fora das receitas</small></p>}
           <button className="text-button" onClick={() => onNavigate('budgets')}>Ver orçamentos <ChevronRight size={14} /></button>
         </article>
@@ -1141,7 +1165,7 @@ function AccountsPage({ accounts, transactions, onAdd, onEdit, onImport }) {
         <button className="button button--primary" onClick={onAdd}><Plus size={17} /> Adicionar conta</button>
       </section>
       <section className="account-summary-grid">
-        <div className="summary-tile"><span className="eyebrow">Saldo consolidado</span><strong>{formatCurrency(positiveBalance - debt)}</strong><span className="summary-tile__hint"><TrendingUp size={14} /> 8,4% este mês</span></div>
+        <div className="summary-tile"><span className="eyebrow">Saldo consolidado</span><strong>{formatCurrency(positiveBalance - debt)}</strong><span className="summary-tile__hint"><TrendingUp size={14} /> saldo de todas as contas</span></div>
         <div className="summary-tile"><span className="eyebrow">Contas ativas</span><strong>{accounts.length}</strong><span className="summary-tile__hint">Em {new Set(accounts.map((account) => account.institution)).size} instituições</span></div>
         <div className="summary-tile"><span className="eyebrow">Limite em uso</span><strong>{formatCurrency(debt)}</strong><span className="summary-tile__hint summary-tile__hint--muted">Cartões e limites</span></div>
       </section>
@@ -1164,7 +1188,7 @@ function AccountCard({ account, onEdit }) {
       <div className="account-card__top"><AccountLogo institution={account.institution} /><button className="icon-button icon-button--subtle" onClick={onEdit} aria-label={`Editar ${account.name}`}><Settings size={17} /></button></div>
       <span className="account-card__type">{account.type}</span>
       <strong className={classNames('account-card__balance', account.balance < 0 && 'negative')}>{formatCurrency(account.balance)}</strong>
-      {isCard ? <><span className="account-card__label">Fatura atual</span><div className="progress-track progress-track--thin"><span style={{ width: `${usage}%` }} /></div><span className="account-card__limit">Limite de {formatCurrency(account.limit)}</span></> : <span className="account-card__updated"><RefreshCw size={13} /> Atualizado {account.lastUpdated.toLowerCase()}</span>}
+      {isCard ? <><span className="account-card__label">Fatura atual</span><div className="progress-track progress-track--thin"><span style={{ width: `${usage}%` }} /></div><span className="account-card__limit">Limite de {formatCurrency(account.limit)}</span></> : <span className="account-card__updated"><RefreshCw size={13} /> Atualizado {(account.lastUpdated ?? 'agora').toLowerCase()}</span>}
       <div className="account-card__footer"><span><AccountLogo institution={account.institution} size="small" /> {account.institution}</span><button className="text-button" onClick={onEdit}>Editar <ChevronRight size={14} /></button></div>
     </article>
   )
@@ -1391,7 +1415,7 @@ function TransactionModal({ open, onClose, onSave, accounts, bills, linkedBill }
 
   if (!open) return null
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }))
-  const pendingBills = bills.filter((bill) => !bill.matchedTransactionId)
+  const pendingBills = bills.filter((bill) => bill.status !== 'paid' && !bill.matchedTransactionId && !bill.paidAt)
   const submit = (event) => {
     event.preventDefault()
     if (!form.description.trim() || Number(String(form.amount).replace(',', '.')) <= 0 || !form.date) return
@@ -1456,24 +1480,30 @@ function TransactionsPage({ transactions, accounts, search, onSearch, onImport, 
   )
 }
 
-function InsightsPage({ transactions, budgets, accounts }) {
+function InsightsPage({ transactions, budgets, accounts, income }) {
   const [monthKey, setMonthKey] = useState(() => {
     try {
       const stored = window.localStorage.getItem('real-total:last-insights-month')
       if (stored) return stored
-    } catch {}
+    } catch { /* ignore */ }
     return monthKeyFromDate(new Date().toISOString())
   })
   const [showAll, setShowAll] = useState(false)
 
-  useEffect(() => { try { window.localStorage.setItem('real-total:last-insights-month', monthKey) } catch {} }, [monthKey])
-  const availableMonths = useMemo(() => [...new Set(transactions.map((transaction) => monthKeyFromDate(transaction.date)).filter(Boolean))].sort().reverse(), [transactions])
+  useEffect(() => { try { window.localStorage.setItem("real-total:last-insights-month", monthKey) } catch { /* ignore */ } }, [monthKey])
+  const availableMonths = useMemo(() => {
+    const keys = new Set(transactions.map((transaction) => monthKeyFromDate(transaction.date)).filter(Boolean))
+    for (const budget of budgets) Object.keys(budget.plannedByMonth ?? {}).forEach((key) => keys.add(key))
+    return [...keys].sort().reverse()
+  }, [transactions, budgets])
+  const manualIncome = Number(income?.monthly?.[monthKey] ?? 0) + Number(income?.extra?.[monthKey] ?? 0)
   const insights = useMemo(() => buildInsights({
     transactions,
     budgets,
     monthKey,
     previousMonthKey: shiftMonth(monthKey, -1),
-  }), [transactions, budgets, monthKey])
+    manualIncome,
+  }), [transactions, budgets, monthKey, manualIncome])
 
   const reserved = accounts
     .filter((account) => ['Poupança', 'Investimento'].includes(account.type))
@@ -1710,20 +1740,23 @@ function SimulationPage({ simulation, savedSimulations, groups, budgets, budgetI
 }
 function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, onAdd, onEdit, onDelete, onUpdateGroup, onIncomeChange, onOpenCopy, onMarkRealized, onAdjustRealized, onNavigate }) {
   const initialMonth = (() => {
-    try {
-      const stored = window.localStorage.getItem('real-total:last-budget-month')
-      if (stored) return stored
-    } catch {}
-    // Prefere o mês mais recente que tenha planejamento (boletos/itens),
-    // para não abrir em um mês vazio quando os dados estão em outro.
+    let stored = ''
+    try { stored = window.localStorage.getItem('real-total:last-budget-month') ?? '' } catch { /* ignore */ }
     const plannedMonths = budgets.flatMap((budget) => Object.keys(budget.plannedByMonth ?? {})).sort().reverse()
+    const hasData = (key) => Boolean(key) && (
+      budgets.some((budget) => budget.plannedByMonth && key in budget.plannedByMonth)
+      || transactions.some((transaction) => String(transaction.date || '').startsWith(key))
+    )
+    // Um mês salvo sem nenhum dado (ex.: dezembro vazio) escondia os boletos
+    // de novembro. Só respeita o mês salvo se ele tiver algo.
+    if (stored && hasData(stored)) return stored
     if (plannedMonths.length) return plannedMonths[0]
     return monthKeyFromDate(transactions[0]?.date) || monthKeyFromDate(new Date().toISOString())
   })()
   const [monthKey, setMonthKey] = useState(initialMonth)
 
   useEffect(() => {
-    try { window.localStorage.setItem('real-total:last-budget-month', monthKey) } catch {}
+    try { window.localStorage.setItem('real-total:last-budget-month', monthKey) } catch { /* ignore */ }
   }, [monthKey])
 
   const monthTransactions = useMemo(() => transactions.filter((transaction) => transaction.type === 'expense' && transaction.date.startsWith(monthKey)), [monthKey, transactions])
@@ -1772,7 +1805,7 @@ function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, o
         if (!keywords.length) continue
         const text = normalizeText(`${transaction.description ?? ''} ${transaction.merchant ?? ''}`)
         total += allocations
-          .filter((allocation) => allocation.category === budget.category && keywords.some((keyword) => text.includes(normalizeText(keyword))))
+          .filter((allocation) => !allocation.budgetItemId && allocation.category === budget.category && keywords.some((keyword) => text.includes(normalizeText(keyword))))
           .reduce((sum, allocation) => sum + allocation.amount, 0)
       }
       spent[budget.id] = total + Number(budget.adjustments?.[monthKey] ?? 0)
@@ -1808,8 +1841,9 @@ function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, o
     }, 0)
 
     const attributed = items.reduce((sum, budget) => sum + getSpent(budget), 0)
+    const adjustments = items.reduce((sum, budget) => sum + Number(budget.adjustments?.[monthKey] ?? 0), 0)
 
-    return { ...group, items, planned, realized, attributed, difference: planned - realized }
+    return { ...group, items, planned, realized: realized + adjustments, attributed, difference: planned - realized - adjustments }
   })
   const totalPlanned = groupData.reduce((sum, group) => sum + group.planned, 0)
   const totalRealized = groupData.reduce((sum, group) => sum + group.realized, 0)
@@ -2685,17 +2719,22 @@ function FinanceApp({ user }) {
     }
   }, [user?.id])
 
-  useEffect(() => saveState({
-    accounts,
-    transactions,
-    bills,
-    budgets,
-    budgetGroups,
-    budgetIncome,
-    simulation,
-    savedSimulations,
-    outlookCandidates: outlookCandidates.map(toStorableCandidate),
-  }), [accounts, transactions, bills, budgets, budgetGroups, budgetIncome, simulation, savedSimulations, outlookCandidates])
+  useEffect(() => {
+    // Sem o guarda, o estado inicial (local/seed) era enviado para a nuvem
+    // antes do pull terminar, podendo sobrescrever os dados reais.
+    if (!hydrated) return
+    saveState({
+      accounts,
+      transactions,
+      bills,
+      budgets,
+      budgetGroups,
+      budgetIncome,
+      simulation,
+      savedSimulations,
+      outlookCandidates: outlookCandidates.map(toStorableCandidate),
+    })
+  }, [hydrated, accounts, transactions, bills, budgets, budgetGroups, budgetIncome, simulation, savedSimulations, outlookCandidates])
   useEffect(() => {
     if (!toast) return undefined
     const timer = window.setTimeout(() => setToast(null), 4200)
@@ -2992,7 +3031,13 @@ function FinanceApp({ user }) {
       ? `Desfazer o pagamento e excluir o lançamento manual de ${formatCurrency(linked.amount)}?`
       : 'Desfazer o pagamento deste boleto? Ele volta para pendente.'
     if (!window.confirm(message)) return
-    if (shouldRemoveLinked) setTransactions((current) => current.filter((transaction) => transaction.id !== linked.id))
+    if (shouldRemoveLinked) {
+      setAccounts((current) => adjustBalancesForTransaction(current, linked, -1))
+      setTransactions((current) => current.filter((transaction) => transaction.id !== linked.id))
+    } else if (linked) {
+      // Sem isso o extrato continuaria contando como pago no orçamento.
+      setTransactions((current) => current.map((transaction) => transaction.id === linked.id ? { ...transaction, linkedBillId: null } : transaction))
+    }
     setBills((current) => current.map((item) => item.id === bill.id ? {
       ...item,
       status: 'pending',
@@ -3024,6 +3069,9 @@ function FinanceApp({ user }) {
   }
 
   const handleUnlinkBillTransaction = (bill) => {
+    if (bill.matchedTransactionId) {
+      setTransactions((current) => current.map((transaction) => transaction.id === bill.matchedTransactionId ? { ...transaction, linkedBillId: null } : transaction))
+    }
     setBills((current) => current.map((item) => item.id === bill.id ? {
       ...item,
       status: 'pending',
@@ -3221,7 +3269,16 @@ function FinanceApp({ user }) {
       if (editingBudget) {
         return current.map((budget) => {
           if (budget.id !== editingBudget.id) return budget
-          const next = { ...budget, ...normalized, adjustments: budget.adjustments ?? {} }
+          // O formulario nao carrega esses campos; sem preserva-los o item
+          // perdia o vinculo com o boleto, trocava de id e virava duplicata.
+          const next = {
+            ...budget,
+            ...normalized,
+            id: budget.id,
+            source: budget.source,
+            billId: budget.billId,
+            adjustments: budget.adjustments ?? {},
+          }
           if (budget.billId && nextDueDate) {
             const previousCompetence = monthKeyFromDate(bills.find((bill) => bill.id === budget.billId)?.dueDate ?? '')
             const nextCompetence = monthKeyFromDate(nextDueDate)
@@ -3237,7 +3294,9 @@ function FinanceApp({ user }) {
         })
       }
       const month = editingBudgetMonth
-      const amount = Number(normalized.defaultAmount || 0)
+      // normalizeBudgetItem zera defaultAmount quando há plannedByMonth,
+      // então o valor precisa vir do planejamento do mês (antes salvava 0).
+      const amount = Number(normalized.plannedByMonth?.[month] ?? 0)
       return [...current, { ...normalized, defaultAmount: 0, plannedByMonth: { ...normalized.plannedByMonth, [month]: amount }, id: `budget-${normalized.label.toLowerCase().replace(/[^a-z0-9]+/gi, '-')}-${Date.now()}` }]
     })
     if (editingBudget?.billId && nextDueDate) {
@@ -3250,13 +3309,20 @@ function FinanceApp({ user }) {
   }
 
   const duplicateBills = useMemo(() => {
-    const seen = new Map()
-    return bills.filter((bill) => {
+    const groups = new Map()
+    for (const bill of bills) {
       const signature = billSignature(bill)
-      if (seen.has(signature)) return true
-      seen.set(signature, bill.id)
-      return false
-    })
+      groups.set(signature, [...(groups.get(signature) ?? []), bill])
+    }
+    const duplicates = []
+    for (const list of groups.values()) {
+      if (list.length < 2) continue
+      // Mantém o registro já pago: apagar o pago deixaria o pendente vivo
+      // e o alerta continuaria aparecendo.
+      const kept = list.find((bill) => bill.status === 'paid' || bill.matchedTransactionId || bill.paidAt) ?? list[0]
+      for (const bill of list) if (bill.id !== kept.id) duplicates.push(bill)
+    }
+    return duplicates
   }, [bills])
 
   const orphanDuplicateBudgets = useMemo(() => {
@@ -3298,6 +3364,8 @@ function FinanceApp({ user }) {
 
   const handleCopyBudget = (targetMonth) => {
     setBudgets((current) => current.map((budget) => {
+      // Boletos nunca recorrem: só o planejamento manual é copiado.
+      if (budget.source === 'bill') return budget
       const sourceDueDate = budget.dueByMonth?.[copyBudgetSource] ?? ''
       return {
         ...budget,
@@ -3312,7 +3380,13 @@ function FinanceApp({ user }) {
 
   const handleDeleteBudget = (id) => {
     const budget = budgets.find((item) => item.id === id)
-    if (!budget || !window.confirm(`Excluir o item ${budget.label}?`)) return
+    if (!budget) return
+    const message = budget.billId
+      ? `Este item vem do boleto ${budget.label}. Excluir o item e também o boleto?`
+      : `Excluir o item ${budget.label}?`
+    if (!window.confirm(message)) return
+    // A sincronização recria itens de boletos; então o boleto também sai.
+    if (budget.billId) setBills((current) => current.filter((bill) => bill.id !== budget.billId))
     setBudgets((current) => current.filter((item) => item.id !== id))
     showToast('Item excluído do orçamento.')
   }
@@ -3322,41 +3396,7 @@ function FinanceApp({ user }) {
     if (!budget) return
 
     const planned = plannedBudgetAmount(budget, monthKey)
-
-    // Calcula o realizado do item (mesma lógica do BudgetsPage)
-    let spent = 0
-    const monthTransactions = transactions.filter((t) => t.type === 'expense' && t.date.startsWith(monthKey))
-    for (const transaction of monthTransactions) {
-      if (budget.accountId && transaction.accountId !== budget.accountId) continue
-      const allocations = getTransactionAllocations(transaction)
-
-      // Nível 0: alocação direta no item do orçamento
-      if (allocations.some((a) => a.budgetItemId === budget.id)) {
-        spent += allocations
-          .filter((a) => a.budgetItemId === budget.id)
-          .reduce((sum, a) => sum + a.amount, 0)
-        continue
-      }
-
-      // Nível 1: boleto vinculado
-      if (budget.billId && transaction.linkedBillId === budget.billId) {
-        spent += allocations
-          .filter((a) => !a.budgetItemId)
-          .reduce((sum, a) => sum + a.amount, 0)
-        continue
-      }
-
-      // Nível 2: palavras-chave
-      const keywords = Array.isArray(budget.keywords) ? budget.keywords.filter(Boolean) : []
-      if (!keywords.length) continue
-      const text = normalizeText(`${transaction.description ?? ''} ${transaction.merchant ?? ''}`)
-      spent += allocations
-        .filter((a) => a.category === budget.category && keywords.some((k) => text.includes(normalizeText(k))))
-        .reduce((sum, a) => sum + a.amount, 0)
-    }
-
-    spent += Number(budget.adjustments?.[monthKey] ?? 0)
-
+    const spent = realizedForBudgetMonth(budget, monthKey, transactions)
     const remaining = Math.round((planned - spent) * 100) / 100
 
     if (remaining <= 0.01) {
@@ -3371,9 +3411,12 @@ function FinanceApp({ user }) {
       return
     }
 
+    // O lançamento precisa cair no mês do item, senão o realizado de outro
+    // mês nunca fecha (ex.: marcar novembro estando em dezembro).
+    const today = todayIsoDate()
     const transaction = {
       id: `transaction-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      date: todayIsoDate(),
+      date: today.startsWith(monthKey) ? today : shiftDateToMonth(today, monthKey),
       description: budget.label,
       merchant: budget.label,
       amount: remaining,
@@ -3550,7 +3593,7 @@ function FinanceApp({ user }) {
     if (mode === 'empty') {
       setAccounts([])
       setTransactions([])
-      setBudgets(seedBudgets)
+      setBudgets([])
       setBudgetGroups(seedBudgetGroups)
       setBudgetIncome({ monthly: {}, extra: {} })
       setImportForm({ institution: 'Nubank', accountId: '' })
@@ -3717,7 +3760,7 @@ function FinanceApp({ user }) {
         </div>
         {activeView === 'budgets'
           ? <BudgetsPage budgets={budgets} groups={budgetGroups} income={budgetIncome} transactions={transactions} accounts={accounts} bills={bills} onAdd={openBudgetModal} onEdit={openBudgetModal} onDelete={handleDeleteBudget} onUpdateGroup={handleUpdateGroup} onIncomeChange={handleIncomeChange} onOpenCopy={openCopyBudgetModal} onMarkRealized={handleMarkBudgetAsRealized} onAdjustRealized={handleAdjustRealized} onNavigate={navigate} />
-          : <InsightsPage transactions={transactions} budgets={budgets} accounts={accounts} />}
+          : <InsightsPage transactions={transactions} budgets={budgets} accounts={accounts} income={budgetIncome} />}
       </div>
     )
   if (activeView === 'simulate') return <SimulationPage simulation={simulation} savedSimulations={savedSimulations} groups={budgetGroups} budgets={budgets} budgetIncome={budgetIncome} onChange={setSimulation} onCopyFrom={handleCopyBudgetToSimulation} onSave={handleSaveSimulation} onLoad={handleLoadSimulation} onDuplicate={handleDuplicateSimulation} onDelete={handleDeleteSimulation} />
