@@ -146,9 +146,19 @@ function inferBudgetGroup(category) {
 function normalizeBudgetItem(item, index = 0) {
   const category = item.category ?? item.label ?? 'Outros'
   const hasPlannedByMonth = item.plannedByMonth && Object.keys(item.plannedByMonth).length > 0
+  let plannedByMonth = item.plannedByMonth ?? {}
+  let defaultAmount = Number(item.defaultAmount ?? item.limit ?? 0)
+  // Migração: itens antigos sem planejamento por mês usavam defaultAmount
+  // como valor recorrente em todos os meses. Move esse valor para o mês
+  // atual, para que outros meses (ex.: dezembro) não herdem dados de novembro.
+  if (!hasPlannedByMonth && defaultAmount > 0) {
+    const currentMonth = monthKeyFromDate(new Date().toISOString())
+    plannedByMonth = { [currentMonth]: defaultAmount }
+    defaultAmount = 0
+  }
   // Quando já existe planejamento por mês, o defaultAmount não deve vazar
-  // para outros meses (ex.: dezembro herdando boletos de outubro).
-  const defaultAmount = hasPlannedByMonth ? 0 : Number(item.defaultAmount ?? item.limit ?? 0)
+  // para outros meses.
+  if (hasPlannedByMonth) defaultAmount = 0
   return {
     id: item.id ?? `budget-${index}-${Date.now()}`,
     groupId: item.groupId ?? inferBudgetGroup(category),
@@ -161,7 +171,7 @@ function normalizeBudgetItem(item, index = 0) {
     source: item.source ?? 'manual',
     billId: item.billId ?? null,
     defaultAmount,
-    plannedByMonth: item.plannedByMonth ?? {},
+    plannedByMonth,
     dueByMonth: item.dueByMonth ?? {},
     defaultDueDate: item.defaultDueDate ?? '',
     adjustments: item.adjustments ?? {},
@@ -235,13 +245,39 @@ function budgetItemShadowsBill(budget, monthKey, bills) {
     && Math.abs(billShareAmount(bill) - plannedBudgetAmount(budget, monthKey)) < 0.01)
 }
 
-function collectDueReminders({ bills, budgets, withinDays = 10, today = new Date() }) {
+function collectDueReminders({ bills, budgets, transactions = [], withinDays = 10, today = new Date() }) {
   const reminders = []
   const currentMonth = monthKeyFromDate(todayIsoDate(today))
   const billsById = Object.fromEntries(bills.map((bill) => [bill.id, bill]))
 
   for (const bill of bills) {
     if (bill.status === 'paid' || bill.matchedTransactionId || bill.paidAt || !bill.dueDate) continue
+    // Boleto vinculado a um item do or��amento que jǭ foi realizado por
+    // completo (inclusive via ajuste manual) nǜo gera alerta.
+    const linkedBudget = budgets.find((budget) => budget.billId === bill.id)
+    if (linkedBudget) {
+      const month = monthKeyFromDate(bill.dueDate)
+      let spent = Number(linkedBudget.adjustments?.[month] ?? 0)
+      const monthTransactions = (transactions || []).filter((transaction) => transaction.type === 'expense' && transaction.date.startsWith(month))
+      for (const transaction of monthTransactions) {
+        if (linkedBudget.accountId && transaction.accountId !== linkedBudget.accountId) continue
+        const allocations = getTransactionAllocations(transaction)
+        if (allocations.some((allocation) => allocation.budgetItemId === linkedBudget.id)) {
+          spent += allocations.filter((allocation) => allocation.budgetItemId === linkedBudget.id).reduce((sum, allocation) => sum + allocation.amount, 0)
+          continue
+        }
+        if (transaction.linkedBillId === linkedBudget.billId) {
+          spent += allocations.filter((allocation) => !allocation.budgetItemId).reduce((sum, allocation) => sum + allocation.amount, 0)
+          continue
+        }
+        const keywords = Array.isArray(linkedBudget.keywords) ? linkedBudget.keywords.filter(Boolean) : []
+        if (!keywords.length) continue
+        const text = normalizeText(`${transaction.description ?? ''} ${transaction.merchant ?? ''}`)
+        spent += allocations.filter((allocation) => allocation.category === linkedBudget.category && keywords.some((keyword) => text.includes(normalizeText(keyword)))).reduce((sum, allocation) => sum + allocation.amount, 0)
+      }
+      const planned = plannedBudgetAmount(linkedBudget, month)
+      if (planned > 0 && spent >= planned - 0.01) continue
+    }
     reminders.push({
       id: `bill-${bill.id}`,
       label: bill.description,
@@ -799,7 +835,7 @@ function EmptyState({ icon: Icon = FileText, title, description, action, onActio
   )
 }
 
-function DashboardPage({ accounts, transactions, budgets, bills, reminders, userName, onNavigate, onImportDemo }) {
+function DashboardPage({ accounts, transactions, budgets, bills, reminders, userName, onNavigate, onImportDemo, onMarkPaid }) {
   const today = new Date()
   const referenceDate = transactions[0]?.date ?? today.toISOString().slice(0, 10)
   const monthKey = referenceDate.slice(0, 7)
@@ -911,7 +947,7 @@ function DashboardPage({ accounts, transactions, budgets, bills, reminders, user
         <button className="button button--soft" onClick={onImportDemo}>Testar com dados fictícios <ChevronRight size={16} /></button>
       </section>
 
-      <DueRemindersPanel reminders={reminders} onNavigate={onNavigate} />
+      <DueRemindersPanel reminders={reminders} onNavigate={onNavigate} onMarkPaid={onMarkPaid} />
 
       <section className="dashboard-grid">
         <article className="panel accounts-panel">
@@ -1001,7 +1037,7 @@ function NotificationBell({ reminders, open, onToggle, onNavigate }) {
   )
 }
 
-function DueRemindersPanel({ reminders, onNavigate }) {
+function DueRemindersPanel({ reminders, onNavigate, onMarkPaid }) {
   if (!reminders.length) return null
   const overdue = reminders.filter((reminder) => reminder.status.days < 0)
   const upcoming = reminders.filter((reminder) => reminder.status.days >= 0)
@@ -1020,20 +1056,23 @@ function DueRemindersPanel({ reminders, onNavigate }) {
         </div>
       </div>
       <div className="due-list">
-        {overdue.map((reminder) => <DueReminderRow key={reminder.id} reminder={reminder} />)}
-        {upcoming.map((reminder) => <DueReminderRow key={reminder.id} reminder={reminder} />)}
+        {overdue.map((reminder) => <DueReminderRow key={reminder.id} reminder={reminder} onMarkPaid={onMarkPaid} />)}
+        {upcoming.map((reminder) => <DueReminderRow key={reminder.id} reminder={reminder} onMarkPaid={onMarkPaid} />)}
       </div>
     </section>
   )
 }
 
-function DueReminderRow({ reminder }) {
+function DueReminderRow({ reminder, onMarkPaid }) {
+  const isBill = reminder.origin === 'bill'
+  const billId = isBill ? reminder.id.replace('bill-', '') : null
   return (
     <div className={classNames('due-item', `due-item--${reminder.status.level}`)}>
       <CategoryIcon category={reminder.category} size={16} />
       <div className="due-item__info"><strong>{reminder.label}</strong><span>{reminder.category} · {formatDate(reminder.dueDate)}</span></div>
       <strong className="due-item__amount">{formatCurrency(reminder.amount)}{reminder.count > 1 && <span className="due-item__count">duplicado</span>}</strong>
       <span className={classNames('due-chip', `due-chip--${reminder.status.level}`)}><Bell size={12} /> {reminder.status.label}</span>
+      {isBill && onMarkPaid && <button className="icon-button icon-button--subtle" onClick={() => onMarkPaid(billId)} aria-label="Marcar como pago" title="Marcar como pago"><CheckCircle2 size={14} /></button>}
     </div>
   )
 }
@@ -1769,7 +1808,7 @@ function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, o
   const plannedResult = totalIncome - totalPlanned
   const realizedResult = totalIncome - totalRealized
   const billsById = useMemo(() => Object.fromEntries(bills.map((bill) => [bill.id, bill])), [bills])
-  const monthReminders = useMemo(() => collectDueReminders({ bills, budgets, withinDays: 3650, today: new Date() })
+  const monthReminders = useMemo(() => collectDueReminders({ bills, budgets, transactions, withinDays: 3650, today: new Date() })
     .filter((reminder) => monthKeyFromDate(reminder.dueDate) === monthKey), [bills, budgets, monthKey])
   const monthOverdue = monthReminders.filter((reminder) => {
     if (reminder.status.days >= 0) return false
@@ -2120,7 +2159,7 @@ function SplitTransactionModal({ open, item, onClose, onSave, onUpdatePlanned, b
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><form className="modal split-modal" onSubmit={submit}><div className="modal__header"><div><span className="eyebrow">Gasto composto</span><h2>Desdobrar transação</h2></div><button type="button" className="icon-button" onClick={onClose}><X size={18} /></button></div><p className="modal__description">Distribua o valor total entre as categorias. A transação original continuará aparecem uma única vez no extrato.</p><div className="split-total"><span>Valor total</span><strong>{formatCurrency(total)}</strong></div>{plannedItems.length > 0 && <div className="split-mode"><button type="button" className={classNames('split-mode__btn', mode === 'item' && 'split-mode__btn--on')} onClick={() => setMode('item')}><Target size={14} /> Por item do orçamento</button><button type="button" className={classNames('split-mode__btn', mode === 'category' && 'split-mode__btn--on')} onClick={() => setMode('category')}>Por categoria</button></div>}{mode === 'item' && plannedItems.length > 0 && <div className="split-hint">Um pagamento pode cobrir vários boletos. Marque quais ele quita e o valor de cada um, e o realizado cai no item certo.</div>}{mode === 'item' && <button type="button" className="split-budget-button" onClick={applyPlannedItems}><Target size={15} /> Trazer os itens de {formatMonthLabel(itemMonthKey)}</button>}{mode === 'item' && plannedItems.length > 0 && <div className="split-hint">O botão traz todos os itens orçados do mês. Apague os que este pagamento não quitou, senão a diferença entra como gasto na categoria escolhida.</div>}{mode === 'category' && <button type="button" className="split-budget-button" onClick={fillFromBudget}><Target size={15} /> Preencher com o que está orçado</button>}<div className="split-allocation-list">{closingAllocations.map((allocation, index) => <div className={classNames('split-allocation-row', allocation.isRemainder && 'split-allocation-row--remainder')} key={allocation.id}><span className="split-allocation-row__number">{allocation.isRemainder ? '·' : index + 1}</span>{mode === 'item' && !allocation.isRemainder ? <span className="select-wrap"><select value={allocation.budgetItemId ?? ''} onChange={(event) => { const picked = byId[event.target.value]; updateAllocation(allocation.id, 'budgetItemId', event.target.value); if (picked) updateAllocation(allocation.id, 'category', picked.category) }}><option value="">Escolher item...</option>{plannedItems.map((budget) => <option key={budget.id} value={budget.id}>{budget.label} · {formatCurrency(budget.amount)}</option>)}</select><ChevronDown size={14} /></span> : <span className="select-wrap"><select value={allocation.category} onChange={(event) => (allocation.isRemainder ? setRemainderCategory(event.target.value) : updateAllocation(allocation.id, 'category', event.target.value))}>{budgetCategoryOptions.map((category) => <option key={category}>{category}</option>)}</select><ChevronDown size={14} /></span>}<span className="input-prefix"><span>R$</span><input type="number" min="0" step="0.01" value={allocation.amount} readOnly={allocation.isRemainder} onChange={(event) => updateAllocation(allocation.id, 'amount', event.target.value)} /></span>{allocation.isRemainder ? <span className="split-planned-hint split-planned-hint--over">{remainderLabel}</span> : (() => { const planned = mode === 'category' ? plannedByCategory[allocation.category] : byId[allocation.budgetItemId]?.amount; if (planned === undefined) return <span className="split-planned-hint" />; const diff = Number(allocation.amount || 0) - planned; return <span className={classNames('split-planned-hint', diff > 0.01 && 'split-planned-hint--over')}>{diff > 0.01 ? `+${formatCurrency(diff)} acima` : `orçado ${formatCurrency(planned)}`}</span> })()}{!allocation.isRemainder && allocations.length > 1 && <button type="button" className="icon-button icon-button--subtle" onClick={() => removeAllocation(allocation.id)} aria-label="Remover distribuição"><Trash2 size={15} /></button>}</div>)}</div>{mode === 'item' && diverging.length > 0 && <div className="split-plan-fix"><span>O que você pagou é diferente do orçado em {diverging.length} item(ns). Isso é ajuste de planejamento, não gasto extra.</span><button type="button" className="button button--soft" onClick={updatePlanned}><RefreshCw size={14} /> Atualizar o orçado com o valor pago</button></div>}<button type="button" className="split-add-button" onClick={addAllocation}><Plus size={15} /> {mode === 'item' ? 'Adicionar outro item' : 'Adicionar categoria'}</button><div className={classNames('split-remaining', overshoot ? 'split-remaining--error' : isBalanced ? 'split-remaining--ok' : 'split-remaining--warning')}><span>{overshoot ? 'As partes somam mais que o total da transação. Reduza algum valor.' : isBalanced ? 'Valor distribuído corretamente' : mode === 'item' && remaining < 0 ? 'Os itens marcados somam mais que o pagamento. Apague os que este Pix não quitou.' : hasRemainder ? (remaining > 0 ? 'Falta distribuir. A diferença entra na última linha.' : 'A diferença entra na última linha, como gasto da categoria escolhida.') : 'Escolha os itens do orçamento'}</span><strong>{formatCurrency(Math.abs(remaining))}</strong></div><div className="modal__actions"><button type="button" className="button button--ghost" onClick={onClose}>Cancelar</button><button type="submit" className="button button--primary" disabled={!allocations.length || overshoot}><Check size={16} /> {allocations.length > 1 ? 'Salvar desdobramento' : 'Confirmar vínculo'}</button></div></form></div>
 }
 
-function BillsPage({ bills, candidates, transactions, accounts, outlookAccount, outlookStatus, outlookMessage, configured, candidatePasswords, candidateBusy, duplicateCount, onRemoveDuplicates, onConnect, onDisconnect, onSync, onAdd, onEdit, onDelete, onMatch, onLaunch, onReopen, onSaveAll, onDiscardAll, onProcessCandidate, onCandidatePasswordChange, onReviewCandidate, onReviewManualBill, onDiscardCandidate, onImportStatement }) {
+function BillsPage({ bills, candidates, transactions, accounts, outlookAccount, outlookStatus, outlookMessage, configured, candidatePasswords, candidateBusy, duplicateCount, onRemoveDuplicates, onConnect, onDisconnect, onSync, onAdd, onEdit, onDelete, onMatch, onLaunch, onReopen, onMarkPaid, onSaveAll, onDiscardAll, onProcessCandidate, onCandidatePasswordChange, onReviewCandidate, onReviewManualBill, onDiscardCandidate, onImportStatement }) {
   const manualInputRef = useRef(null)
   const [manualFile, setManualFile] = useState(null)
   const [manualPassword, setManualPassword] = useState('')
@@ -2172,7 +2211,7 @@ function BillsPage({ bills, candidates, transactions, accounts, outlookAccount, 
 
     {bills.length > 0 && <section className={classNames('panel due-summary', overdueBills.length > 0 && 'due-summary--alert')}><div className="due-summary__icon"><Bell size={19} /></div><div className="due-summary__copy"><strong>Alerta de vencimento</strong><span>{overdueBills.length ? `${overdueBills.length} boleto(s) vencido(s)` : 'Nenhum boleto vencido'}{dueSoonBills.length ? ` · ${dueSoonBills.length} vence(m) nos próximos 5 dias` : ''}</span></div><div className="due-summary__amount"><span>Total pendente</span><strong>{formatCurrency(pendingTotal)}</strong></div></section>}
 
-    <section className="panel bills-list-panel"><div className="panel-heading"><div><span className="eyebrow">Controle por vencimento</span><h2>Boletos cadastrados</h2></div><span className="budgets-panel__note"><CalendarDays size={14} /> Competência = mês do vencimento</span></div>{bills.length ? <div className="table-wrap"><table className="transaction-table bills-table"><thead><tr><th>Vencimento</th><th>Boleto</th><th>Categoria</th><th>Competência</th><th className="align-right">Total</th><th className="align-right">Sua parte</th><th>Status</th><th /></tr></thead><tbody>{bills.map((bill) => <tr key={bill.id}><td><span className="date-cell">{formatDate(bill.dueDate)}</span></td><td><div className="review-description"><strong>{bill.description}</strong><span>{bill.source === 'outlook' ? `Outlook · ${bill.sender || 'Remetente'}` : 'Cadastro manual'}</span></div></td><td><CategoryPill category={bill.category} /></td><td><span className="date-cell">{formatMonthLabel(bill.competence || monthKeyFromDate(bill.dueDate))}</span></td><td className="align-right amount-cell">{formatCurrency(bill.amount)}</td><td className="align-right amount-cell amount-cell--positive">{formatCurrency(Number(bill.amount || 0) * Number(bill.mySharePercent ?? 100) / 100)}</td><td><span className={classNames('status-chip', bill.status === 'paid' || bill.matchedTransactionId ? 'status-chip--success' : new Date().toISOString().slice(0, 10) > bill.dueDate ? 'status-chip--danger' : 'status-chip--warning')}>{bill.matchedTransactionId ? 'Conciliado' : bill.status === 'paid' ? 'Pago' : new Date().toISOString().slice(0, 10) > bill.dueDate ? 'Vencido' : 'Pendente'}</span>{bill.amountDifference != null && <span className="bill-difference">Pago {formatCurrency(bill.paidAmount ?? bill.amount)} · diferença {formatCurrency(bill.amountDifference)}</span>}</td><td className="align-right"><div className="transaction-actions"><button className="icon-button icon-button--subtle" onClick={() => onMatch(bill.id)} aria-label="Vincular a uma transação do extrato"><Link2 size={16} /></button>{bill.status !== 'paid' ? <button className="icon-button icon-button--subtle" onClick={() => onLaunch(bill)} aria-label="Registrar pagamento"><Receipt size={16} /></button> : <button className="icon-button icon-button--subtle" onClick={() => onReopen(bill)} aria-label="Desfazer pagamento"><Undo2 size={16} /></button>}<button className="icon-button icon-button--subtle" onClick={() => onEdit(bill)} aria-label="Editar boleto"><Settings size={16} /></button><button className="icon-button icon-button--subtle" onClick={() => onDelete(bill.id)} aria-label="Excluir boleto"><Trash2 size={16} /></button></div></td></tr>)}</tbody></table></div> : <EmptyState icon={Mail} title="Nenhum boleto cadastrado" description="Conecte o Outlook ou cadastre um boleto manualmente para organizar por competência." action="Cadastrar boleto" onAction={onAdd} />}</section>
+    <section className="panel bills-list-panel"><div className="panel-heading"><div><span className="eyebrow">Controle por vencimento</span><h2>Boletos cadastrados</h2></div><span className="budgets-panel__note"><CalendarDays size={14} /> Competência = mês do vencimento</span></div>{bills.length ? <div className="table-wrap"><table className="transaction-table bills-table"><thead><tr><th>Vencimento</th><th>Boleto</th><th>Categoria</th><th>Competência</th><th className="align-right">Total</th><th className="align-right">Sua parte</th><th>Status</th><th /></tr></thead><tbody>{bills.map((bill) => <tr key={bill.id}><td><span className="date-cell">{formatDate(bill.dueDate)}</span></td><td><div className="review-description"><strong>{bill.description}</strong><span>{bill.source === 'outlook' ? `Outlook · ${bill.sender || 'Remetente'}` : 'Cadastro manual'}</span></div></td><td><CategoryPill category={bill.category} /></td><td><span className="date-cell">{formatMonthLabel(bill.competence || monthKeyFromDate(bill.dueDate))}</span></td><td className="align-right amount-cell">{formatCurrency(bill.amount)}</td><td className="align-right amount-cell amount-cell--positive">{formatCurrency(Number(bill.amount || 0) * Number(bill.mySharePercent ?? 100) / 100)}</td><td><span className={classNames('status-chip', bill.status === 'paid' || bill.matchedTransactionId ? 'status-chip--success' : new Date().toISOString().slice(0, 10) > bill.dueDate ? 'status-chip--danger' : 'status-chip--warning')}>{bill.matchedTransactionId ? 'Conciliado' : bill.status === 'paid' ? 'Pago' : new Date().toISOString().slice(0, 10) > bill.dueDate ? 'Vencido' : 'Pendente'}</span>{bill.amountDifference != null && <span className="bill-difference">Pago {formatCurrency(bill.paidAmount ?? bill.amount)} · diferença {formatCurrency(bill.amountDifference)}</span>}</td><td className="align-right"><div className="transaction-actions"><button className="icon-button icon-button--subtle" onClick={() => onMatch(bill.id)} aria-label="Vincular a uma transação do extrato"><Link2 size={16} /></button>{bill.status !== 'paid' ? <><button className="icon-button icon-button--subtle" onClick={() => onMarkPaid?.(bill)} aria-label="Marcar como pago" title="Marcar como pago"><CheckCircle2 size={16} /></button><button className="icon-button icon-button--subtle" onClick={() => onLaunch(bill)} aria-label="Registrar pagamento"><Receipt size={16} /></button></> : <button className="icon-button icon-button--subtle" onClick={() => onReopen(bill)} aria-label="Desfazer pagamento"><Undo2 size={16} /></button>}<button className="icon-button icon-button--subtle" onClick={() => onEdit(bill)} aria-label="Editar boleto"><Settings size={16} /></button><button className="icon-button icon-button--subtle" onClick={() => onDelete(bill.id)} aria-label="Excluir boleto"><Trash2 size={16} /></button></div></td></tr>)}</tbody></table></div> : <EmptyState icon={Mail} title="Nenhum boleto cadastrado" description="Conecte o Outlook ou cadastre um boleto manualmente para organizar por competência." action="Cadastrar boleto" onAction={onAdd} />}</section>
   </div>
 }
 
@@ -2552,7 +2591,7 @@ function FinanceApp({ user }) {
   const [cloudStatus, setCloudStatus] = useState('sincronizando')
   const [bellOpen, setBellOpen] = useState(false)
   const [alertSettings, setAlertSettings] = useState({ email: '', enabled: false, days_before: 1 })
-  const reminders = useMemo(() => collectDueReminders({ bills, budgets }), [bills, budgets])
+  const reminders = useMemo(() => collectDueReminders({ bills, budgets, transactions }), [bills, budgets, transactions])
 
   useEffect(() => {
     if (!user?.email) return
@@ -2889,6 +2928,18 @@ function FinanceApp({ user }) {
     if (destination) showToast(`Transferência registrada: ${formatCurrency(transaction.amount)} movidos para ${destination.name}.`)
     else if (bill) showToast('Pagamento registrado. O lançamento entrou como realizado no orçamento.')
     else showToast('Lançamento manual salvo.')
+  }
+
+  const handleMarkBillPaid = (bill) => {
+    if (!bill || !window.confirm(`Marcar "${bill.description}" como pago?`)) return
+    setBills((current) => current.map((item) => item.id === bill.id ? {
+      ...item,
+      status: 'paid',
+      paidAt: todayIsoDate(),
+      paidAmount: Number(bill.amount || 0) * Number(bill.mySharePercent ?? 100) / 100,
+      manualMatch: true,
+    } : item))
+    showToast('Boleto marcado como pago.')
   }
 
   const handleReopenBill = (bill) => {
@@ -3576,7 +3627,7 @@ function FinanceApp({ user }) {
   }
 
   const renderView = () => {
-    if (activeView === 'dashboard') return <DashboardPage accounts={accounts} transactions={transactions} budgets={budgets} bills={bills} reminders={reminders} userName={userName} onNavigate={navigate} onImportDemo={() => { navigate('import'); handleDemo('Nubank') }} />
+    if (activeView === 'dashboard') return <DashboardPage accounts={accounts} transactions={transactions} budgets={budgets} bills={bills} reminders={reminders} userName={userName} onNavigate={navigate} onImportDemo={() => { navigate('import'); handleDemo('Nubank') }} onMarkPaid={(id) => { const bill = bills.find((b) => b.id === id); if (bill) handleMarkBillPaid(bill) }} />
     if (activeView === 'transactions' || activeView === 'import') return (
       <div className="page-stack">
         <div className="tab-bar">
@@ -3608,7 +3659,7 @@ function FinanceApp({ user }) {
           <button className={classNames('tab-bar__item', activeView === 'settings' && 'tab-bar__item--active')} onClick={() => navigate('settings')}>Preferências</button>
         </div>
         {activeView === 'accounts' && <AccountsPage accounts={accounts} transactions={transactions} onAdd={() => { setEditingAccount(null); setAccountModalOpen(true) }} onEdit={(account) => { setEditingAccount(account); setAccountModalOpen(true) }} onImport={() => navigate('import')} />}
-        {activeView === 'bills' && <BillsPage bills={bills} candidates={outlookCandidates} transactions={transactions} accounts={accounts} outlookAccount={outlookAccount} outlookStatus={outlookStatus} outlookMessage={outlookMessage} configured={isOutlookConfigured()} candidatePasswords={candidatePasswords} candidateBusy={candidateBusy} duplicateCount={duplicateBills.length + orphanDuplicateBudgets.length} onRemoveDuplicates={handleRemoveDuplicates} onConnect={handleConnectOutlook} onDisconnect={handleDisconnectOutlook} onSync={handleSyncOutlook} onAdd={() => openBillModal()} onEdit={openBillModal} onDelete={handleDeleteBill} onMatch={setBillMatchId} onLaunch={openTransactionModal} onReopen={handleReopenBill} onSaveAll={handleSaveAllCandidates} onDiscardAll={handleDiscardAllCandidates} onProcessCandidate={handleProcessCandidate} onCandidatePasswordChange={(id, value) => setCandidatePasswords((current) => ({ ...current, [id]: value }))} onReviewCandidate={(candidate) => openBillModal({ ...candidate, source: 'outlook', sender: candidate.sender, receivedAt: candidate.receivedAt })} onReviewManualBill={(bill) => openBillModal(bill)} onDiscardCandidate={handleDiscardCandidate} onImportStatement={(candidate) => { setStatementCandidate(candidate); setStatementModalOpen(true) }} />}
+        {activeView === 'bills' && <BillsPage bills={bills} candidates={outlookCandidates} transactions={transactions} accounts={accounts} outlookAccount={outlookAccount} outlookStatus={outlookStatus} outlookMessage={outlookMessage} configured={isOutlookConfigured()} candidatePasswords={candidatePasswords} candidateBusy={candidateBusy} duplicateCount={duplicateBills.length + orphanDuplicateBudgets.length} onRemoveDuplicates={handleRemoveDuplicates} onConnect={handleConnectOutlook} onDisconnect={handleDisconnectOutlook} onSync={handleSyncOutlook} onAdd={() => openBillModal()} onEdit={openBillModal} onDelete={handleDeleteBill} onMatch={setBillMatchId} onLaunch={openTransactionModal} onReopen={handleReopenBill} onMarkPaid={handleMarkBillPaid} onSaveAll={handleSaveAllCandidates} onDiscardAll={handleDiscardAllCandidates} onProcessCandidate={handleProcessCandidate} onCandidatePasswordChange={(id, value) => setCandidatePasswords((current) => ({ ...current, [id]: value }))} onReviewCandidate={(candidate) => openBillModal({ ...candidate, source: 'outlook', sender: candidate.sender, receivedAt: candidate.receivedAt })} onReviewManualBill={(bill) => openBillModal(bill)} onDiscardCandidate={handleDiscardCandidate} onImportStatement={(candidate) => { setStatementCandidate(candidate); setStatementModalOpen(true) }} />}
         {activeView === 'settings' && <SettingsPage user={user} cloudStatus={cloudStatus} alert={alertSettings} onAlertChange={setAlertSettings} onSignOut={isCloudConfigured ? () => cloudSignOut().catch(() => {}) : null} onResetDemo={() => handleResetData('demo')} onStartEmpty={() => handleResetData('empty')} onNavigate={navigate} />}
       </div>
     )
