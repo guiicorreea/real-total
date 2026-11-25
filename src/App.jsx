@@ -2166,12 +2166,6 @@ function BudgetCopyModal({ open, sourceMonth, onClose, onCopy }) {
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><form className="modal" onSubmit={(event) => { event.preventDefault(); if (targetMonth && targetMonth !== sourceMonth) onCopy(targetMonth) }}><div className="modal__header"><div><span className="eyebrow">Planejamento mensal</span><h2>Copiar mês</h2></div><button type="button" className="icon-button" onClick={onClose}><X size={18} /></button></div><p className="modal__description">Os valores planejados de <strong>{formatMonthLabel(sourceMonth)}</strong> serão replicados para o mês escolhido. Os gastos realizados não serão copiados.</p><label className="field"><span>Mês de destino</span><input type="month" value={targetMonth} onChange={(event) => setTargetMonth(event.target.value)} required /></label><div className="modal__actions"><button type="button" className="button button--ghost" onClick={onClose}>Cancelar</button><button type="submit" className="button button--primary" disabled={!targetMonth || targetMonth === sourceMonth}><Copy size={16} /> Copiar orçamento</button></div></form></div>
 }
 
-function ComingSoonPage({ type }) {
-  const budgets = type === 'budgets'
-  return (
-    <div className="page-stack"><section className="page-heading"><div><span className="eyebrow">Próxima etapa</span><h1>{budgets ? 'Orçamentos' : 'Metas financeiras'}</h1><p>{budgets ? 'Defina limites por categoria e saiba quando precisa ajustar os gastos.' : 'Transforme planos em progresso visível e acompanhe cada conquista.'}</p></div></section><section className="coming-soon panel"><div className="coming-soon__art"><div className="coming-soon__orb coming-soon__orb--one" /><div className="coming-soon__orb coming-soon__orb--two" />{budgets ? <PiggyBank size={55} /> : <Target size={55} />}</div><span className="eyebrow">Em construção</span><h2>{budgets ? 'Seu dinheiro com limites mais inteligentes' : 'Cada meta, mais perto'}</h2><p>Primeiro validamos a importação e a classificação. Esta tela será ativada na próxima versão do Real Total.</p><button className="button button--soft" onClick={() => window.alert('Esta funcionalidade será adicionada em breve.')}>Avisar quando estiver pronto <Bell size={15} /></button></section></div>
-  )
-}
 
 function DueAlertCard({ alert, onChange, user }) {
   const [saving, setSaving] = useState(false)
@@ -3542,7 +3536,6 @@ function FinanceApp({ user }) {
       </div>
     )
   if (activeView === 'simulate') return <SimulationPage simulation={simulation} savedSimulations={savedSimulations} groups={budgetGroups} budgets={budgets} budgetIncome={budgetIncome} onChange={setSimulation} onCopyFrom={handleCopyBudgetToSimulation} onSave={handleSaveSimulation} onLoad={handleLoadSimulation} onDuplicate={handleDuplicateSimulation} onDelete={handleDeleteSimulation} />
-    if (activeView === 'goals') return <ComingSoonPage type="goals" />
     return <SettingsPage
       user={user}
       cloudStatus={cloudStatus}
