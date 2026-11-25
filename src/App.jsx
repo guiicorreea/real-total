@@ -146,19 +146,12 @@ function inferBudgetGroup(category) {
 function normalizeBudgetItem(item, index = 0) {
   const category = item.category ?? item.label ?? 'Outros'
   const hasPlannedByMonth = item.plannedByMonth && Object.keys(item.plannedByMonth).length > 0
-  let plannedByMonth = item.plannedByMonth ?? {}
-  let defaultAmount = Number(item.defaultAmount ?? item.limit ?? 0)
-  // Migração: itens antigos sem planejamento por mês usavam defaultAmount
-  // como valor recorrente em todos os meses. Move esse valor para o mês
-  // atual, para que outros meses (ex.: dezembro) não herdem dados de novembro.
-  if (!hasPlannedByMonth && defaultAmount > 0) {
-    const currentMonth = monthKeyFromDate(new Date().toISOString())
-    plannedByMonth = { [currentMonth]: defaultAmount }
-    defaultAmount = 0
-  }
-  // Quando já existe planejamento por mês, o defaultAmount não deve vazar
-  // para outros meses.
-  if (hasPlannedByMonth) defaultAmount = 0
+  const plannedByMonth = item.plannedByMonth ?? {}
+  // Boletos só existem no mês da competência: nunca recorrem.
+  // Itens manuais (despesas fixas) podem recorrer via defaultAmount.
+  const defaultAmount = (item.source === 'bill')
+    ? 0
+    : (hasPlannedByMonth ? 0 : Number(item.defaultAmount ?? item.limit ?? 0))
   return {
     id: item.id ?? `budget-${index}-${Date.now()}`,
     groupId: item.groupId ?? inferBudgetGroup(category),
