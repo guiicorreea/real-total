@@ -1405,9 +1405,16 @@ function TransactionsPage({ transactions, accounts, search, onSearch, onImport, 
 }
 
 function InsightsPage({ transactions, budgets, accounts }) {
-  const [monthKey, setMonthKey] = useState(() => monthKeyFromDate(new Date().toISOString()))
+  const [monthKey, setMonthKey] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem('real-total:last-insights-month')
+      if (stored) return stored
+    } catch {}
+    return monthKeyFromDate(new Date().toISOString())
+  })
   const [showAll, setShowAll] = useState(false)
 
+  useEffect(() => { try { window.localStorage.setItem('real-total:last-insights-month', monthKey) } catch {} }, [monthKey])
   const availableMonths = useMemo(() => [...new Set(transactions.map((transaction) => monthKeyFromDate(transaction.date)).filter(Boolean))].sort().reverse(), [transactions])
   const insights = useMemo(() => buildInsights({
     transactions,
@@ -1650,13 +1657,18 @@ function SimulationPage({ simulation, savedSimulations, groups, budgets, budgetI
   )
 }
 function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, onAdd, onEdit, onDelete, onUpdateGroup, onIncomeChange, onOpenCopy, onMarkRealized, onNavigate }) {
-  const initialMonth = monthKeyFromDate(transactions[0]?.date) || monthKeyFromDate(new Date().toISOString())
+  const initialMonth = (() => {
+    try {
+      const stored = window.localStorage.getItem('real-total:last-budget-month')
+      if (stored) return stored
+    } catch {}
+    return monthKeyFromDate(transactions[0]?.date) || monthKeyFromDate(new Date().toISOString())
+  })()
   const [monthKey, setMonthKey] = useState(initialMonth)
 
   useEffect(() => {
-    const latestMonth = monthKeyFromDate(transactions[0]?.date)
-    if (latestMonth) setMonthKey(latestMonth)
-  }, [transactions])
+    try { window.localStorage.setItem('real-total:last-budget-month', monthKey) } catch {}
+  }, [monthKey])
 
   const monthTransactions = useMemo(() => transactions.filter((transaction) => transaction.type === 'expense' && transaction.date.startsWith(monthKey)), [monthKey, transactions])
   const spendingByCategory = useMemo(() => monthTransactions.reduce((totals, transaction) => {
@@ -1823,7 +1835,7 @@ function BudgetRow({ budget, planned, spent, sharedCategory, accountName, dueDat
   return (
     <div className={classNames('budget-row', isOver && 'budget-row--over')}>
       <div className="budget-row__identity"><CategoryIcon category={budget.category} size={18} /><div><strong>{budget.label}</strong><span>{budget.source === 'bill' ? 'Boleto importado · ' : ''}{budget.category} · {accountName}{sharedCategory ? ' · use palavras-chave' : ''}</span>{due && <span className={classNames('budget-row__due', `budget-row__due--${due.level}`)}><CalendarDays size={12} /> Vence {formatDate(dueDate)} · {due.label}</span>}</div></div>
-      <div className="budget-row__progress"><div className="budget-row__labels"><span><strong>{formatCurrency(spent)}</strong> realizado</span><strong>{formatCurrency(planned)}</strong></div><div className="progress-track"><span style={{ width: `${Math.min(percentage, 100)}%` }} /></div></div>
+      <div className="budget-row__progress"><div className="budget-row__labels"><span><strong>{formatCurrency(spent)}</strong> realizado</span><strong>{planned > 0 ? formatCurrency(planned) : '—'}</strong></div><div className="progress-track"><span style={{ width: `${Math.min(percentage, 100)}%` }} /></div></div>
       <div className={classNames('budget-row__remaining', isOver && 'text-red', isClose && 'text-orange')}>{isOver ? `${formatCurrency(Math.abs(difference))} acima` : `${formatCurrency(difference)} saldo`}</div>
       <div className="budget-row__actions">
         {hasRemaining && onMarkRealized && (
