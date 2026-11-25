@@ -1771,7 +1771,32 @@ function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, o
   const billsById = useMemo(() => Object.fromEntries(bills.map((bill) => [bill.id, bill])), [bills])
   const monthReminders = useMemo(() => collectDueReminders({ bills, budgets, withinDays: 3650, today: new Date() })
     .filter((reminder) => monthKeyFromDate(reminder.dueDate) === monthKey), [bills, budgets, monthKey])
-  const monthOverdue = monthReminders.filter((reminder) => reminder.status.days < 0)
+  const monthOverdue = monthReminders.filter((reminder) => {
+    if (reminder.status.days >= 0) return false
+    // Itens/boletos já realizados (ou com realizado >= planejado) não contam
+    // como vencidos, mesmo que a data tenha passado.
+    if (reminder.origin === 'bill') {
+      const bill = billsById[reminder.id.replace('bill-', '')]
+      if (bill && (bill.status === 'paid' || bill.matchedTransactionId || bill.paidAt)) return false
+      const linkedBudget = budgets.find((budget) => budget.billId === bill?.id)
+      if (linkedBudget) {
+        const planned = plannedBudgetAmount(linkedBudget, monthKey)
+        const spent = spentByBudgetId[linkedBudget.id] ?? 0
+        if (planned > 0 && spent >= planned - 0.01) return false
+      }
+      return true
+    }
+    if (reminder.origin === 'budget') {
+      const budget = budgets.find((item) => item.id === reminder.id.replace('budget-', ''))
+      if (budget) {
+        const planned = plannedBudgetAmount(budget, monthKey)
+        const spent = spentByBudgetId[budget.id] ?? 0
+        if (planned > 0 && spent >= planned - 0.01) return false
+      }
+      return true
+    }
+    return true
+  })
 
   return (
     <div className="page-stack">
