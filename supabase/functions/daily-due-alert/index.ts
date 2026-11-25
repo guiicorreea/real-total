@@ -161,7 +161,7 @@ Deno.serve(async () => {
     const window = Number(setting.days_before) || 0
 
     const items = bills
-      .filter((bill) => bill && bill.dueDate && bill.status !== 'paid' && !bill.matchedTransactionId)
+      .filter((bill) => bill && bill.dueDate && bill.status !== 'paid' && !bill.matchedTransactionId && !bill.paidAt)
       .map((bill) => {
         const days = daysBetween(today, bill.dueDate)
         const share = (Number(bill.amount) || 0) * (Number(bill.mySharePercent ?? 100) / 100)

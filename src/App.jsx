@@ -165,7 +165,14 @@ function normalizeBudgetItem(item, index = 0) {
 }
 
 function plannedBudgetAmount(item, monthKey) {
-  return Number(item.plannedByMonth?.[monthKey] ?? item.defaultAmount ?? item.limit ?? 0)
+  // Quando o item tem planejamento por mês, só o que foi planejado para
+  // aquele mês conta. Assim um mês novo (ex.: dezembro) não herda os
+  // valores da competência anterior. Itens antigos sem planejamento por mês
+  // mantêm o comportamento recorrente (defaultAmount).
+  if (item.plannedByMonth && Object.keys(item.plannedByMonth).length) {
+    return Number(item.plannedByMonth?.[monthKey] ?? 0)
+  }
+  return Number(item.defaultAmount ?? item.limit ?? 0)
 }
 
 // Chave que agrupa o gasto de um item de orçamento: conta e categoria juntas,
@@ -230,7 +237,7 @@ function collectDueReminders({ bills, budgets, withinDays = 10, today = new Date
   const billsById = Object.fromEntries(bills.map((bill) => [bill.id, bill]))
 
   for (const bill of bills) {
-    if (bill.status === 'paid' || bill.matchedTransactionId || !bill.dueDate) continue
+    if (bill.status === 'paid' || bill.matchedTransactionId || bill.paidAt || !bill.dueDate) continue
     reminders.push({
       id: `bill-${bill.id}`,
       label: bill.description,
@@ -3083,7 +3090,9 @@ function FinanceApp({ user }) {
           return next
         })
       }
-      return [...current, { ...normalized, id: `budget-${normalized.label.toLowerCase().replace(/[^a-z0-9]+/gi, '-')}-${Date.now()}` }]
+      const month = editingBudgetMonth
+      const amount = Number(normalized.defaultAmount || 0)
+      return [...current, { ...normalized, defaultAmount: 0, plannedByMonth: { ...normalized.plannedByMonth, [month]: amount }, id: `budget-${normalized.label.toLowerCase().replace(/[^a-z0-9]+/gi, '-')}-${Date.now()}` }]
     })
     if (editingBudget?.billId && nextDueDate) {
       setBills((current) => current.map((bill) => bill.id === editingBudget.billId ? { ...bill, dueDate: nextDueDate, competence: monthKeyFromDate(nextDueDate) } : bill))
