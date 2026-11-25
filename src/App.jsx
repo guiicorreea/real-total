@@ -835,16 +835,25 @@ function EmptyState({ icon: Icon = FileText, title, description, action, onActio
   )
 }
 
-function DashboardPage({ accounts, transactions, budgets, bills, reminders, userName, onNavigate, onImportDemo, onMarkPaid }) {
+function DashboardPage({ accounts, transactions, budgets, bills, income: manualIncome, reminders, userName, onNavigate, onImportDemo, onMarkPaid }) {
   const today = new Date()
+  const todayMonth = today.toISOString().slice(0, 7)
   const referenceDate = transactions[0]?.date ?? today.toISOString().slice(0, 10)
-  const monthKey = referenceDate.slice(0, 7)
+  const latestMonth = referenceDate.slice(0, 7)
+  // O painel deve refletir o mes atual quando ele tem movimentacao.
+  // Antes ele usava o mes da transacao mais recente (ex.: dezembro) e as
+  // receitas de novembro apareciam zeradas.
+  const monthKey = transactions.some((transaction) => String(transaction.date || '').startsWith(todayMonth)) ? todayMonth : latestMonth
   const todayLabel = new Intl.DateTimeFormat('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' }).format(today)
   const capitalizedTodayLabel = todayLabel.charAt(0).toUpperCase() + todayLabel.slice(1)
   const monthTransactions = transactions.filter((transaction) => transaction.date.startsWith(monthKey))
   const incomeEntries = monthTransactions.filter((transaction) => transaction.type === 'income')
   const yieldEntries = incomeEntries.filter(isYieldTransaction)
-  const income = incomeEntries.filter((transaction) => !isYieldTransaction(transaction)).reduce((sum, transaction) => sum + transaction.amount, 0)
+  const transactionIncome = incomeEntries.filter((transaction) => !isYieldTransaction(transaction)).reduce((sum, transaction) => sum + transaction.amount, 0)
+  // Receita do mes: usa o extrato quando existe lancamento de receita;
+  // senao usa a receita informada manualmente no orcamento.
+  const plannedMonthlyIncome = Number(manualIncome?.monthly?.[monthKey] ?? 0) + Number(manualIncome?.extra?.[monthKey] ?? 0)
+  const income = transactionIncome > 0 ? transactionIncome : plannedMonthlyIncome
   const yields = yieldEntries.reduce((sum, transaction) => sum + transaction.amount, 0)
   const expenses = monthTransactions.filter((transaction) => transaction.type === 'expense').reduce((sum, transaction) => sum + transaction.amount, 0)
   const reservedBalance = accounts
@@ -3664,7 +3673,7 @@ function FinanceApp({ user }) {
   }
 
   const renderView = () => {
-    if (activeView === 'dashboard') return <DashboardPage accounts={accounts} transactions={transactions} budgets={budgets} bills={bills} reminders={reminders} userName={userName} onNavigate={navigate} onImportDemo={() => { navigate('import'); handleDemo('Nubank') }} onMarkPaid={(id) => { const bill = bills.find((b) => b.id === id); if (bill) handleMarkBillPaid(bill) }} />
+    if (activeView === 'dashboard') return <DashboardPage accounts={accounts} transactions={transactions} budgets={budgets} bills={bills} income={budgetIncome} reminders={reminders} userName={userName} onNavigate={navigate} onImportDemo={() => { navigate('import'); handleDemo('Nubank') }} onMarkPaid={(id) => { const bill = bills.find((b) => b.id === id); if (bill) handleMarkBillPaid(bill) }} />
     if (activeView === 'transactions' || activeView === 'import') return (
       <div className="page-stack">
         <div className="tab-bar">
