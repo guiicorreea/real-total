@@ -145,7 +145,10 @@ function inferBudgetGroup(category) {
 
 function normalizeBudgetItem(item, index = 0) {
   const category = item.category ?? item.label ?? 'Outros'
-  const defaultAmount = Number(item.defaultAmount ?? item.limit ?? 0)
+  const hasPlannedByMonth = item.plannedByMonth && Object.keys(item.plannedByMonth).length > 0
+  // Quando já existe planejamento por mês, o defaultAmount não deve vazar
+  // para outros meses (ex.: dezembro herdando boletos de outubro).
+  const defaultAmount = hasPlannedByMonth ? 0 : Number(item.defaultAmount ?? item.limit ?? 0)
   return {
     id: item.id ?? `budget-${index}-${Date.now()}`,
     groupId: item.groupId ?? inferBudgetGroup(category),
@@ -538,7 +541,7 @@ function buildBudgetItemForBill(bill, existingBudget) {
     label: bill.description,
     category: bill.category,
     accountId: '',
-    defaultAmount: shareAmount,
+    defaultAmount: 0,
     plannedByMonth,
     dueByMonth,
     defaultDueDate: bill.dueDate ?? '',
@@ -1656,7 +1659,7 @@ function SimulationPage({ simulation, savedSimulations, groups, budgets, budgetI
     </div>
   )
 }
-function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, onAdd, onEdit, onDelete, onUpdateGroup, onIncomeChange, onOpenCopy, onMarkRealized, onNavigate }) {
+function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, onAdd, onEdit, onDelete, onUpdateGroup, onIncomeChange, onOpenCopy, onMarkRealized, onAdjustRealized, onNavigate }) {
   const initialMonth = (() => {
     try {
       const stored = window.localStorage.getItem('real-total:last-budget-month')
@@ -1719,7 +1722,7 @@ function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, o
           .filter((allocation) => allocation.category === budget.category && keywords.some((keyword) => text.includes(normalizeText(keyword))))
           .reduce((sum, allocation) => sum + allocation.amount, 0)
       }
-      spent[budget.id] = total
+      spent[budget.id] = total + Number(budget.adjustments?.[monthKey] ?? 0)
     }
 
     // Boleto de banco não repete o nome do boleto no histórico, então o
@@ -1799,7 +1802,7 @@ function BudgetsPage({ budgets, groups, income, transactions, accounts, bills, o
 
       <section className="panel budgets-panel">
         <div className="panel-heading"><div><span className="eyebrow">Itens planejados</span><h2>Previsto x realizado</h2></div><span className="budgets-panel__note"><Info size={14} /> Clique no item para editar o valor deste mês</span></div>
-        {budgets.length ? <div className="budget-groups-list">{groupData.map((group) => group.items.length ? <div className="budget-group-section" key={group.id}><div className="budget-group-section__heading"><div><span className="budget-group-dot" style={{ background: group.color }} /><strong>{group.name}</strong><span>{group.target}% da meta</span></div><div><span>Planejado {formatCurrency(group.planned)}</span><span>Realizado {formatCurrency(group.realized)}</span></div></div><div className="budget-list">{group.items.map((budget) => <BudgetRow key={budget.id} budget={budget} planned={plannedBudgetAmount(budget, monthKey)} spent={getSpent(budget)} sharedCategory={!budget.keywords?.length && budgets.filter((item) => item.category === budget.category && item.accountId === budget.accountId).length > 1} accountName={budget.accountId ? accounts.find((account) => account.id === budget.accountId)?.name ?? 'Conta vinculada' : 'Todas as contas'} dueDate={plannedBudgetDueDate(budget, monthKey, billsById)} monthKey={monthKey} paid={budget.billId ? (billsById[budget.billId]?.status === 'paid' || !!billsById[budget.billId]?.matchedTransactionId) : false} onEdit={() => onEdit(budget, monthKey)} onDelete={onDelete} onMarkRealized={onMarkRealized} />)}</div></div> : null)}</div> : <EmptyState icon={PiggyBank} title="Nenhum item criado" description="Crie categorias e valores planejados para comparar com seus extratos." action="Criar item" onAction={() => onAdd(monthKey)} />}
+        {budgets.length ? <div className="budget-groups-list">{groupData.map((group) => group.items.length ? <div className="budget-group-section" key={group.id}><div className="budget-group-section__heading"><div><span className="budget-group-dot" style={{ background: group.color }} /><strong>{group.name}</strong><span>{group.target}% da meta</span></div><div><span>Planejado {formatCurrency(group.planned)}</span><span>Realizado {formatCurrency(group.realized)}</span></div></div><div className="budget-list">{group.items.map((budget) => <BudgetRow key={budget.id} budget={budget} planned={plannedBudgetAmount(budget, monthKey)} spent={getSpent(budget)} sharedCategory={!budget.keywords?.length && budgets.filter((item) => item.category === budget.category && item.accountId === budget.accountId).length > 1} accountName={budget.accountId ? accounts.find((account) => account.id === budget.accountId)?.name ?? 'Conta vinculada' : 'Todas as contas'} dueDate={plannedBudgetDueDate(budget, monthKey, billsById)} monthKey={monthKey} paid={budget.billId ? (billsById[budget.billId]?.status === 'paid' || !!billsById[budget.billId]?.matchedTransactionId) : false} onEdit={() => onEdit(budget, monthKey)} onDelete={onDelete} onMarkRealized={onMarkRealized} onAdjust={(desired) => onAdjustRealized?.(budget.id, monthKey, desired - getSpent(budget))} />)}</div></div> : null)}</div> : <EmptyState icon={PiggyBank} title="Nenhum item criado" description="Crie categorias e valores planejados para comparar com seus extratos." action="Criar item" onAction={() => onAdd(monthKey)} />}
         <button className="budget-add-line" onClick={() => onAdd(monthKey)}><Plus size={15} /> Adicionar item ao orçamento</button>
       </section>
 
@@ -1820,7 +1823,7 @@ function BudgetGroupCard({ group, totalPlanned, totalIncome, onUpdateGroup }) {
   return <article className={classNames('budget-group-card', isAbove && 'budget-group-card--over')} style={{ '--group-color': group.color, '--group-soft': group.soft }}><div className="budget-group-card__heading"><div className="budget-group-card__title"><span className="budget-group-dot" /><strong>{group.name}</strong></div><label className="budget-target-input"><span>meta</span><input type="number" min="0" max="100" value={group.target} onChange={(event) => onUpdateGroup(group.id, event.target.value)} /><b>%</b></label></div><div className="budget-group-card__values"><div><span>Planejado</span><strong>{formatCurrency(group.planned)}</strong></div><div><span>Realizado</span><strong>{formatCurrency(group.realized)}</strong></div><div><span>Saldo</span><strong className={group.difference < 0 ? 'text-red' : 'text-green'}>{formatCurrency(group.difference)}</strong></div></div><div className="budget-group-card__target"><span>Meta proporcional: {formatCurrency(targetAmount)}</span><span className={isAbove ? 'text-red' : 'text-green'}>{isAbove ? `${formatCurrency(difference)} acima da meta` : isBelow ? `${formatCurrency(Math.abs(difference))} abaixo da meta` : 'Na meta'}</span></div></article>
 }
 
-function BudgetRow({ budget, planned, spent, sharedCategory, accountName, dueDate, monthKey, paid = false, onEdit, onDelete, onMarkRealized }) {
+function BudgetRow({ budget, planned, spent, sharedCategory, accountName, dueDate, monthKey, paid = false, onEdit, onDelete, onMarkRealized, onAdjust }) {
   const difference = planned - spent
   const percentage = planned ? (spent / planned) * 100 : 0
   const isOver = difference < 0
@@ -1838,6 +1841,17 @@ function BudgetRow({ budget, planned, spent, sharedCategory, accountName, dueDat
       <div className="budget-row__progress"><div className="budget-row__labels"><span><strong>{formatCurrency(spent)}</strong> realizado</span><strong>{planned > 0 ? formatCurrency(planned) : '—'}</strong></div><div className="progress-track"><span style={{ width: `${Math.min(percentage, 100)}%` }} /></div></div>
       <div className={classNames('budget-row__remaining', isOver && 'text-red', isClose && 'text-orange')}>{isOver ? `${formatCurrency(Math.abs(difference))} acima` : `${formatCurrency(difference)} saldo`}</div>
       <div className="budget-row__actions">
+        {onAdjust && (
+          <button className="button button--ghost button--sm" onClick={() => {
+            const input = window.prompt(`Valor realizado correto para ${budget.label} (R$):`, Number(spent || 0).toFixed(2))
+            if (input === null) return
+            const value = Number(String(input).replace(',', '.'))
+            if (Number.isNaN(value) || value < 0) { window.alert('Valor inválido.'); return }
+            onAdjust(value)
+          }} aria-label={`Ajustar realizado de ${budget.label}`}>
+            <SlidersHorizontal size={14} /> Ajustar
+          </button>
+        )}
         {hasRemaining && onMarkRealized && (
           <button className="button button--soft button--sm" onClick={handleMarkRealized} aria-label={`Marcar ${budget.label} como realizado`}>
             <CheckCircle2 size={14} /> Realizado
@@ -3221,6 +3235,8 @@ function FinanceApp({ user }) {
         .reduce((sum, a) => sum + a.amount, 0)
     }
 
+    spent += Number(budget.adjustments?.[monthKey] ?? 0)
+
     const remaining = Math.round((planned - spent) * 100) / 100
 
     if (remaining <= 0.01) {
@@ -3276,6 +3292,14 @@ function FinanceApp({ user }) {
 
   const handleUpdateGroup = (id, target) => {
     setBudgetGroups((current) => current.map((group) => group.id === id ? { ...group, target: Math.max(0, Math.min(100, Number(target) || 0)) } : group))
+  }
+
+  const handleAdjustRealized = (budgetId, monthKey, delta) => {
+    setBudgets((current) => current.map((budget) => budget.id === budgetId ? {
+      ...budget,
+      adjustments: { ...(budget.adjustments ?? {}), [monthKey]: Number(((budget.adjustments?.[monthKey] ?? 0) + delta).toFixed(2)) },
+    } : budget))
+    showToast('Realizado ajustado.')
   }
 
   const handleIncomeChange = (field, month, value) => {
@@ -3552,7 +3576,7 @@ function FinanceApp({ user }) {
           <button className={classNames('tab-bar__item', activeView === 'insights' && 'tab-bar__item--active')} onClick={() => navigate('insights')}>Análise</button>
         </div>
         {activeView === 'budgets'
-          ? <BudgetsPage budgets={budgets} groups={budgetGroups} income={budgetIncome} transactions={transactions} accounts={accounts} bills={bills} onAdd={openBudgetModal} onEdit={openBudgetModal} onDelete={handleDeleteBudget} onUpdateGroup={handleUpdateGroup} onIncomeChange={handleIncomeChange} onOpenCopy={openCopyBudgetModal} onMarkRealized={handleMarkBudgetAsRealized} onNavigate={navigate} />
+          ? <BudgetsPage budgets={budgets} groups={budgetGroups} income={budgetIncome} transactions={transactions} accounts={accounts} bills={bills} onAdd={openBudgetModal} onEdit={openBudgetModal} onDelete={handleDeleteBudget} onUpdateGroup={handleUpdateGroup} onIncomeChange={handleIncomeChange} onOpenCopy={openCopyBudgetModal} onMarkRealized={handleMarkBudgetAsRealized} onAdjustRealized={handleAdjustRealized} onNavigate={navigate} />
           : <InsightsPage transactions={transactions} budgets={budgets} accounts={accounts} />}
       </div>
     )
