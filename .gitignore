@@ -9,3 +9,5 @@ dist
 
 # cache local do Supabase CLI
 supabase/.temp
+
+.vercel
